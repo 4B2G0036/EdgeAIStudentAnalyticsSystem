@@ -1,0 +1,122 @@
+import os
+import sys
+from datetime import datetime
+import logging
+
+# Ensure current directory is in sys.path
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
+import config
+import database
+from api.routers import sessions
+
+# Configure project log formats
+config.setup_logging()
+logger = logging.getLogger("api.main")
+
+app = FastAPI(
+    title="學生專注度與異常行為分析系統 - API 後端服務",
+    description="本後端 API 負責處理邊緣端即時 AI 視覺推論數據持久化、狀態機評分聚合、以及課程 Session 生命週期管理。",
+    version="1.0.0"
+)
+
+
+# CORS configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=config.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Register routers
+app.include_router(sessions.router)
+
+def self_heal_abnormal_events():
+    """
+    Requirement 2.5: Force-close on Restart (Self-Healing)
+    When FastAPI starts, query all docs in Abnormal_Events where ended_at is null.
+    For each doc:
+    1. Set ended_at to current time (datetime.utcnow()).
+    2. Set ended_reason to "server_restart".
+    3. Re-calculate duration_seconds = ended_at - started_at.
+    """
+    logger.info("Executing database self-healing check for hanging Abnormal_Events...")
+    try:
+        db = database.get_db()
+        now = datetime.utcnow()
+        
+        # Find all unclosed abnormal events
+        unclosed_events = list(db["Abnormal_Events"].find({"ended_at": None}))
+        if not unclosed_events:
+            logger.info("No unclosed abnormal events found. Database is clean.")
+            return
+            
+        logger.info(f"Found {len(unclosed_events)} hanging abnormal events. Force-closing them...")
+        
+        healed_count = 0
+        for event in unclosed_events:
+            started_at = event.get("started_at")
+            if not started_at:
+                # Fallback if started_at is missing
+                started_at = now
+                
+            # Calculate duration in seconds (float)
+            duration = (now - started_at).total_seconds()
+            
+            db["Abnormal_Events"].update_one(
+                {"_id": event["_id"]},
+                {
+                    "$set": {
+                        "ended_at": now,
+                        "ended_reason": "server_restart",
+                        "duration_seconds": float(duration)
+                    }
+                }
+            )
+            healed_count += 1
+            
+        logger.info(f"Self-healed {healed_count} abnormal events successfully.")
+    except Exception as e:
+        logger.critical(f"Database Self-Healing failed: {e}")
+
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Starting FastAPI server...")
+    try:
+        # Initialize Database connection & create collections/indexes
+        database.initialize_database()
+        
+        # Perform Self-healing force-close on startup
+        self_heal_abnormal_events()
+    except Exception as e:
+        logger.critical(f"FastAPI Startup failed due to DB initialization error: {e}")
+        # Server will crash/exit to prevent starting with broken DB
+        sys.exit(1)
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("FastAPI server is shutting down...")
+
+@app.get("/", include_in_schema=False)
+def read_root():
+    return {
+        "status": "online",
+        "appName": "Student Analytics System API Backend",
+        "currentTime": datetime.utcnow().isoformat()
+    }
+
+@app.get("/dashboard", include_in_schema=False)
+def redirect_dashboard():
+    return RedirectResponse(url="/dashboard/")
+
+# Mount static dashboard files (must be after all routes)
+_dashboard_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dashboard")
+if os.path.isdir(_dashboard_dir):
+    app.mount("/dashboard", StaticFiles(directory=_dashboard_dir, html=True), name="dashboard")
+    logger.info(f"Dashboard mounted at /dashboard -> {_dashboard_dir}")

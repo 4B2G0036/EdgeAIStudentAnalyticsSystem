@@ -1,0 +1,1105 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>學生專注度分析系統 — 課程控制台</title>
+  <meta name="description" content="邊緣 AI 學生專注度與異常行為分析系統 — 教師課程管理控制台" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg-primary: #0a0e1a;
+      --bg-secondary: #0f1629;
+      --bg-card: rgba(255,255,255,0.04);
+      --bg-card-hover: rgba(255,255,255,0.07);
+      --border: rgba(255,255,255,0.08);
+      --border-active: rgba(99,179,237,0.4);
+      --text-primary: #e8eaf6;
+      --text-secondary: #8892b0;
+      --text-muted: #4a5568;
+      --accent-blue: #63b3ed;
+      --accent-cyan: #4fd1c7;
+      --accent-purple: #9f7aea;
+      --accent-green: #68d391;
+      --accent-red: #fc8181;
+      --accent-yellow: #f6e05e;
+      --accent-orange: #f6ad55;
+      --gradient-main: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      --gradient-success: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+      --gradient-danger: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+      --gradient-card: linear-gradient(135deg, rgba(99,179,237,0.1) 0%, rgba(159,122,234,0.1) 100%);
+      --shadow-glow: 0 0 30px rgba(99,179,237,0.15);
+      --shadow-card: 0 8px 32px rgba(0,0,0,0.3);
+      --radius: 16px;
+      --radius-sm: 10px;
+      --transition: all 0.3s cubic-bezier(0.4,0,0.2,1);
+    }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Noto Sans TC', 'Inter', sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      background-image:
+        radial-gradient(ellipse at 20% 50%, rgba(102,126,234,0.08) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 20%, rgba(159,122,234,0.08) 0%, transparent 50%),
+        radial-gradient(ellipse at 60% 80%, rgba(79,209,199,0.05) 0%, transparent 50%);
+    }
+
+    /* ── HEADER ─────────────────────── */
+    header {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(10,14,26,0.85);
+      backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+      padding: 0 2rem;
+    }
+    .header-inner {
+      max-width: 1200px; margin: 0 auto;
+      display: flex; align-items: center; justify-content: space-between;
+      height: 64px;
+    }
+    .logo { display: flex; align-items: center; gap: 12px; }
+    .logo-icon {
+      width: 36px; height: 36px;
+      background: var(--gradient-main);
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+      box-shadow: 0 4px 15px rgba(102,126,234,0.4);
+    }
+    .logo-text { font-size: 1rem; font-weight: 600; }
+    .logo-text span { color: var(--accent-blue); }
+    #api-status {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 0.8rem; color: var(--text-secondary);
+    }
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--text-muted);
+      transition: var(--transition);
+      position: relative;
+    }
+    .status-dot.online { background: var(--accent-green); box-shadow: 0 0 8px var(--accent-green); }
+    .status-dot.online::after {
+      content: ''; position: absolute; inset: -3px;
+      border-radius: 50%; border: 2px solid var(--accent-green);
+      animation: pulse 2s infinite;
+    }
+    .status-dot.offline { background: var(--accent-red); box-shadow: 0 0 8px var(--accent-red); }
+    @keyframes pulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:0; transform:scale(1.5); } }
+
+    /* ── LAYOUT ─────────────────────── */
+    main { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 1.5rem; margin-bottom: 1.5rem; }
+    @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } .grid-3 { grid-template-columns: 1fr; } }
+
+    /* ── STAT CARDS ─────────────────── */
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.5rem;
+      display: flex; align-items: center; gap: 1rem;
+      transition: var(--transition);
+      position: relative; overflow: hidden;
+    }
+    .stat-card::before {
+      content: ''; position: absolute;
+      top: 0; left: 0; right: 0; height: 2px;
+      background: var(--gradient-main); opacity: 0;
+      transition: var(--transition);
+    }
+    .stat-card:hover::before { opacity: 1; }
+    .stat-card:hover { background: var(--bg-card-hover); border-color: var(--border-active); }
+    .stat-icon {
+      width: 44px; height: 44px; border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; flex-shrink: 0;
+    }
+    .stat-icon.blue { background: rgba(99,179,237,0.15); }
+    .stat-icon.green { background: rgba(104,211,145,0.15); }
+    .stat-icon.purple { background: rgba(159,122,234,0.15); }
+    .stat-label { font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 4px; }
+    .stat-value { font-size: 1.4rem; font-weight: 700; }
+    .stat-value.online { color: var(--accent-green); }
+    .stat-value.live { color: var(--accent-cyan); }
+
+    /* ── SECTION CARD ───────────────── */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow-card);
+      transition: var(--transition);
+    }
+    .card-header {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .card-title { font-size: 0.95rem; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .card-body { padding: 1.5rem; }
+
+    /* ── ACTIVE SESSION PANEL ───────── */
+    #active-session-panel {
+      background: linear-gradient(135deg, rgba(104,211,145,0.08) 0%, rgba(79,209,199,0.08) 100%);
+      border-color: rgba(104,211,145,0.25);
+    }
+    #active-session-panel.has-session {
+      animation: session-glow 3s ease-in-out infinite alternate;
+    }
+    @keyframes session-glow {
+      from { box-shadow: 0 0 20px rgba(104,211,145,0.1); }
+      to   { box-shadow: 0 0 40px rgba(104,211,145,0.25); }
+    }
+    .session-info-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem;
+    }
+    .session-info-label { font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+    .session-info-value { font-size: 0.95rem; font-weight: 500; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 3px 10px; border-radius: 100px; font-size: 0.72rem; font-weight: 600;
+    }
+    .badge-live { background: rgba(104,211,145,0.2); color: var(--accent-green); border: 1px solid rgba(104,211,145,0.3); }
+    .badge-ended { background: rgba(74,85,104,0.3); color: var(--text-secondary); border: 1px solid var(--border); }
+    .no-session-placeholder {
+      text-align: center; padding: 2rem;
+      color: var(--text-muted); font-size: 0.9rem;
+    }
+    .no-session-placeholder .icon { font-size: 2.5rem; margin-bottom: 0.75rem; opacity: 0.4; }
+
+    /* ── FORM ───────────────────────── */
+    .form-group { margin-bottom: 1.25rem; }
+    .form-label {
+      display: block; margin-bottom: 6px;
+      font-size: 0.8rem; font-weight: 500; color: var(--text-secondary);
+    }
+    .form-label span { color: var(--accent-red); margin-left: 3px; }
+    .form-control {
+      width: 100%; padding: 0.65rem 1rem;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-size: 0.9rem;
+      font-family: inherit;
+      transition: var(--transition);
+    }
+    .form-control:focus {
+      outline: none;
+      border-color: var(--accent-blue);
+      background: rgba(99,179,237,0.06);
+      box-shadow: 0 0 0 3px rgba(99,179,237,0.12);
+    }
+    .form-control::placeholder { color: var(--text-muted); }
+    .form-control:disabled { opacity: 0.5; cursor: not-allowed; }
+    textarea.form-control { resize: vertical; min-height: 70px; }
+
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 600px) { .form-row { grid-template-columns: 1fr; } }
+
+    /* ── BUTTONS ────────────────────── */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      padding: 0.65rem 1.5rem;
+      border: none; border-radius: var(--radius-sm);
+      font-family: inherit; font-size: 0.875rem; font-weight: 600;
+      cursor: pointer; transition: var(--transition); user-select: none;
+      white-space: nowrap;
+    }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none !important; }
+    .btn-primary {
+      background: var(--gradient-main);
+      color: #fff;
+      box-shadow: 0 4px 15px rgba(102,126,234,0.4);
+    }
+    .btn-primary:not(:disabled):hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 25px rgba(102,126,234,0.5);
+    }
+    .btn-success {
+      background: var(--gradient-success);
+      color: #fff;
+      box-shadow: 0 4px 15px rgba(17,153,142,0.4);
+    }
+    .btn-success:not(:disabled):hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 25px rgba(17,153,142,0.5);
+    }
+    .btn-danger {
+      background: var(--gradient-danger);
+      color: #fff;
+      box-shadow: 0 4px 15px rgba(245,87,108,0.4);
+    }
+    .btn-danger:not(:disabled):hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 25px rgba(245,87,108,0.5);
+    }
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:not(:disabled):hover {
+      background: var(--bg-card-hover);
+      border-color: var(--border-active);
+      color: var(--text-primary);
+    }
+    .btn-sm { padding: 0.4rem 0.9rem; font-size: 0.78rem; }
+    .btn-full { width: 100%; }
+    .btn-icon { font-size: 1rem; }
+
+    /* ── SPINNER ────────────────────── */
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: none;
+    }
+    .loading .spinner { display: block; }
+    .loading .btn-text { display: none; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── TOAST ──────────────────────── */
+    #toast-container {
+      position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .toast {
+      padding: 0.75rem 1.25rem;
+      background: var(--bg-secondary);
+      border-radius: var(--radius-sm);
+      border-left: 3px solid var(--accent-blue);
+      font-size: 0.85rem;
+      box-shadow: var(--shadow-card);
+      display: flex; align-items: center; gap: 10px;
+      animation: toast-in 0.3s ease; max-width: 350px;
+      opacity: 1; transition: opacity 0.3s;
+    }
+    .toast.success { border-color: var(--accent-green); }
+    .toast.error   { border-color: var(--accent-red); }
+    .toast.warning { border-color: var(--accent-yellow); }
+    @keyframes toast-in { from { transform: translateX(30px); opacity:0; } to { transform:none; opacity:1; } }
+
+    /* ── HISTORY TABLE ──────────────── */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+    thead tr { border-bottom: 1px solid var(--border); }
+    th { padding: 0.75rem 1rem; text-align: left; color: var(--text-muted); font-weight: 500; text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.05em; white-space: nowrap; }
+    td { padding: 0.85rem 1rem; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: middle; }
+    tbody tr:hover { background: rgba(255,255,255,0.02); }
+    tbody tr:last-child td { border-bottom: none; }
+    .duration-chip {
+      display: inline-block; padding: 2px 8px; border-radius: 100px;
+      font-size: 0.72rem; background: rgba(99,179,237,0.12); color: var(--accent-blue);
+    }
+
+    /* ── TIMER ──────────────────────── */
+    #session-timer {
+      font-size: 2rem; font-weight: 700;
+      color: var(--accent-cyan); font-variant-numeric: tabular-nums;
+      letter-spacing: 0.05em;
+    }
+    .timer-label { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; }
+
+    /* ── DIVIDER ────────────────────── */
+    .divider { height: 1px; background: var(--border); margin: 1.25rem 0; }
+    .section-gap { margin-bottom: 1.5rem; }
+
+    /* ── CONFIRM MODAL ──────────────── */
+    .modal-overlay {
+      position: fixed; inset: 0; z-index: 500;
+      background: rgba(0,0,0,0.65); backdrop-filter: blur(4px);
+      display: flex; align-items: center; justify-content: center;
+      opacity: 0; pointer-events: none; transition: opacity 0.2s;
+    }
+    .modal-overlay.active { opacity: 1; pointer-events: all; }
+    .modal {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 2rem; max-width: 420px; width: 90%;
+      transform: scale(0.95) translateY(10px);
+      transition: transform 0.2s, opacity 0.2s;
+    }
+    .modal-overlay.active .modal { transform: scale(1) translateY(0); }
+    .modal-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 0.75rem; }
+    .modal-body { color: var(--text-secondary); font-size: 0.9rem; line-height: 1.6; margin-bottom: 1.5rem; }
+    .modal-actions { display: flex; gap: 0.75rem; justify-content: flex-end; }
+
+    /* ── EMPTY STATE ────────────────── */
+    .empty-state {
+      text-align: center; padding: 3rem 1rem;
+      color: var(--text-muted);
+    }
+    .empty-state .icon { font-size: 3rem; margin-bottom: 1rem; opacity: 0.3; }
+    .empty-state p { font-size: 0.9rem; }
+
+    /* ── PAGINATION ─────────────────── */
+    .pagination { display: flex; align-items: center; gap: 8px; justify-content: flex-end; margin-top: 1rem; }
+    .pagination .btn { min-width: 36px; }
+
+    /* ── SCROLLBAR ──────────────────── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+  </style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+  <div class="header-inner">
+    <div class="logo">
+      <div class="logo-icon">🎓</div>
+      <div class="logo-text">學生分析系統 <span>控制台</span></div>
+    </div>
+    <div id="api-status">
+      <div class="status-dot" id="status-dot"></div>
+      <span id="status-text">連線中…</span>
+    </div>
+  </div>
+</header>
+
+<!-- MAIN -->
+<main>
+
+  <!-- STAT STRIP -->
+  <div class="grid-3 section-gap">
+    <div class="stat-card">
+      <div class="stat-icon blue">🌐</div>
+      <div>
+        <div class="stat-label">API 伺服器</div>
+        <div class="stat-value" id="stat-api">--</div>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon green">📡</div>
+      <div>
+        <div class="stat-label">目前課程狀態</div>
+        <div class="stat-value" id="stat-session-state">--</div>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon purple">📚</div>
+      <div>
+        <div class="stat-label">歷史課程總數</div>
+        <div class="stat-value" id="stat-total">--</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN 2-COLUMN GRID -->
+  <div class="grid-2 section-gap">
+
+    <!-- LEFT: 目前課程 -->
+    <div class="card" id="active-session-panel">
+      <div class="card-header">
+        <div class="card-title">📡 目前課程</div>
+        <button class="btn btn-ghost btn-sm" onclick="refreshAll()" title="刷新">↻ 刷新</button>
+      </div>
+      <div class="card-body" id="active-session-body">
+        <div class="no-session-placeholder">
+          <div class="icon">📭</div>
+          <div>目前沒有進行中的課程</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: 開課表單 -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">➕ 開始新課程</div>
+      </div>
+      <div class="card-body">
+        <form id="start-form" onsubmit="handleStartSession(event)">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="class_name">課程名稱<span>*</span></label>
+              <input id="class_name" class="form-control" type="text" placeholder="例如：計算機概論" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="teacher">教師姓名<span>*</span></label>
+              <input id="teacher" class="form-control" type="text" placeholder="例如：張教授" required />
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="room">教室編號</label>
+            <input id="room" class="form-control" type="text" placeholder="例如：資工館 301" />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="notes">備註說明</label>
+            <textarea id="notes" class="form-control" placeholder="選填，例如：期中考、補課、線上授課…"></textarea>
+          </div>
+          <button type="submit" class="btn btn-success btn-full" id="start-btn">
+            <span class="spinner" id="start-spinner"></span>
+            <span class="btn-text">🚀 開始課程</span>
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- HISTORY -->
+  <div class="card">
+    <div class="card-header" style="flex-wrap: wrap; gap: 1rem;">
+      <div class="card-title">📋 歷史課程紀錄</div>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-left:auto;">
+        <!-- Search Input -->
+        <input id="history-search" class="form-control" type="text" placeholder="🔍 搜尋課程或教師..." style="max-width: 180px; padding: 4px 8px; font-size: 0.8rem;" oninput="debounceHistorySearch()" />
+        <!-- Status Filter Select -->
+        <select id="history-status-filter" class="form-control" style="max-width: 110px; padding: 4px 8px; font-size: 0.8rem; height: auto;" onchange="loadHistory()">
+          <option value="">所有狀態</option>
+          <option value="active">進行中</option>
+          <option value="ended">已結束</option>
+        </select>
+        <span id="history-count" style="font-size:0.78rem;color:var(--text-muted);"></span>
+        <button class="btn btn-ghost btn-sm" onclick="loadHistory()">↻ 重新載入</button>
+      </div>
+    </div>
+    <div class="card-body" style="padding:0;">
+      <div class="table-wrap">
+        <table id="history-table">
+          <thead>
+            <tr>
+              <th>課程名稱</th>
+              <th>教師</th>
+              <th>教室</th>
+              <th>開始時間</th>
+              <th>結束時間</th>
+              <th>課程時長</th>
+              <th>狀態</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="history-tbody">
+            <tr><td colspan="8"><div class="empty-state"><div class="icon">⏳</div><p>載入中…</p></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="pagination" id="pagination-bar"></div>
+    </div>
+  </div>
+
+</main>
+
+<!-- TOAST CONTAINER -->
+<div id="toast-container"></div>
+
+<!-- END SESSION CONFIRM MODAL -->
+<div class="modal-overlay" id="end-modal">
+  <div class="modal">
+    <div class="modal-title">⚠️ 確認結束課程？</div>
+    <div class="modal-body">
+      結束後，系統將關閉即時監控並儲存本次課程的所有分析數據。<br/><br/>
+      此操作無法復原，請確認學生監控已完成後再按下確認。
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeEndModal()">取消</button>
+      <button class="btn btn-danger" id="confirm-end-btn" onclick="confirmEndSession()">
+        <span class="spinner" id="end-spinner"></span>
+        <span class="btn-text">確認結束課程</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- EDIT SESSION MODAL -->
+<div class="modal-overlay" id="edit-modal">
+  <div class="modal" style="max-width: 480px;">
+    <div class="modal-title">✏️ 編輯課程內容</div>
+    <form id="edit-form" onsubmit="handleEditSession(event)">
+      <input type="hidden" id="edit_session_id" />
+      <div class="form-group">
+        <label class="form-label" for="edit_class_name">課程名稱<span>*</span></label>
+        <input id="edit_class_name" class="form-control" type="text" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="edit_teacher">教師姓名<span>*</span></label>
+        <input id="edit_teacher" class="form-control" type="text" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="edit_room">教室編號</label>
+        <input id="edit_room" class="form-control" type="text" />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="edit_notes">備註說明</label>
+        <textarea id="edit_notes" class="form-control" placeholder="選填，例如：課程大綱、補充說明..."></textarea>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" onclick="closeEditModal()">取消</button>
+        <button type="submit" class="btn btn-primary" id="edit-submit-btn">
+          <span class="spinner" id="edit-spinner"></span>
+          <span class="btn-text">儲存修改</span>
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- DELETE SESSION CONFIRM MODAL -->
+<div class="modal-overlay" id="delete-modal">
+  <div class="modal">
+    <div class="modal-title">🗑️ 確認刪除課程紀錄？</div>
+    <div class="modal-body">
+      確認要刪除此課程紀錄嗎？這會一併**永久刪除**該堂課的所有時序專注度數據與異常事件，且此操作無法復原。
+    </div>
+    <form id="delete-form" onsubmit="handleDeleteSession(event)">
+      <input type="hidden" id="delete_session_id" />
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" onclick="closeDeleteModal()">取消</button>
+        <button type="submit" class="btn btn-danger" id="delete-submit-btn">
+          <span class="spinner" id="delete-spinner"></span>
+          <span class="btn-text">確認刪除</span>
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- DETAILS / SUMMARY MODAL -->
+<div class="modal-overlay" id="details-modal">
+  <div class="modal" style="max-width: 500px;">
+    <div class="modal-title">📊 課程數據摘要</div>
+    <div class="modal-body" id="details-modal-body" style="color: var(--text-primary);">
+      <div class="empty-state"><div class="icon">⏳</div><p>載入中…</p></div>
+    </div>
+    <div class="modal-actions" style="margin-top: 1.5rem;">
+      <button class="btn btn-primary" id="download-report-btn" onclick="downloadReport()">📥 下載課後報告</button>
+      <button class="btn btn-ghost" onclick="closeDetailsModal()">關閉</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = 'http://localhost:8000';
+let currentActiveSession = null;
+let timerInterval = null;
+let activeSessionPollInterval = null;
+let historyPage = { offset: 0, limit: 8 };
+let historySessions = [];
+let searchTimeout = null;
+let detailsSessionId = null;
+
+function debounceHistorySearch() {
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(() => {
+    historyPage.offset = 0;
+    loadHistory();
+  }, 300);
+}
+
+function openDeleteModal(sessionId) {
+  document.getElementById('delete_session_id').value = sessionId;
+  document.getElementById('delete-modal').classList.add('active');
+}
+
+function closeDeleteModal() {
+  document.getElementById('delete-modal').classList.remove('active');
+}
+
+async function handleDeleteSession(e) {
+  e.preventDefault();
+  const sessionId = document.getElementById('delete_session_id').value;
+  setLoading('delete-submit-btn', 'delete-spinner', true);
+  try {
+    await apiFetch(`/api/v1/sessions/${sessionId}`, { method: 'DELETE' });
+    toast('🗑️ 課程紀錄已成功刪除！', 'success');
+    closeDeleteModal();
+    await refreshAll();
+  } catch (err) {
+    toast(`刪除失敗：${err.data?.detail || '未知錯誤'}`, 'error');
+  } finally {
+    setLoading('delete-submit-btn', 'delete-spinner', false);
+  }
+}
+
+async function openDetailsModal(sessionId) {
+  detailsSessionId = sessionId;
+  const body = document.getElementById('details-modal-body');
+  body.innerHTML = `<div class="empty-state"><div class="icon">⏳</div><p>載入中…</p></div>`;
+  document.getElementById('details-modal').classList.add('active');
+  document.getElementById('download-report-btn').disabled = true;
+
+  try {
+    const summary = await apiFetch(`/api/v1/sessions/${sessionId}/summary`);
+    document.getElementById('download-report-btn').disabled = false;
+    
+    const isLive = !summary.ended_at;
+    const scoreColor = summary.avg_attention_score >= 80 ? 'var(--accent-green)' : (summary.avg_attention_score >= 60 ? 'var(--accent-yellow)' : 'var(--accent-red)');
+    
+    body.innerHTML = `
+      <div class="session-info-grid" style="margin-bottom: 1.5rem;">
+        <div class="session-info-item">
+          <div class="session-info-label">課程名稱</div>
+          <div class="session-info-value" style="font-weight:700;">${summary.class_name}</div>
+        </div>
+        <div class="session-info-item">
+          <div class="session-info-label">授課教師</div>
+          <div class="session-info-value">${summary.teacher}</div>
+        </div>
+        <div class="session-info-item">
+          <div class="session-info-label">開始時間</div>
+          <div class="session-info-value" style="font-size:0.82rem;">${fmtDatetime(summary.started_at)}</div>
+        </div>
+        <div class="session-info-item">
+          <div class="session-info-label">結束時間</div>
+          <div class="session-info-value" style="font-size:0.82rem;">${isLive ? '<span style="color:var(--accent-green)">進行中</span>' : fmtDatetime(summary.ended_at)}</div>
+        </div>
+      </div>
+      
+      <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:12px;padding:1.25rem;display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;text-align:center;margin-bottom:1.25rem;">
+        <div>
+          <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:4px;">平均專注度</div>
+          <div style="font-size:1.4rem;font-weight:700;color:${scoreColor};">${summary.avg_attention_score}%</div>
+        </div>
+        <div>
+          <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:4px;">最大人數</div>
+          <div style="font-size:1.4rem;font-weight:700;color:var(--accent-cyan);">${summary.max_student_count}</div>
+        </div>
+        <div>
+          <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:4px;">異常次數</div>
+          <div style="font-size:1.4rem;font-weight:700;color:var(--accent-red);">${summary.total_abnormal_events}</div>
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    body.innerHTML = `<div class="empty-state"><div class="icon">❌</div><p>載入摘要失敗：${err.data?.detail || '未知錯誤'}</p></div>`;
+  }
+}
+
+function closeDetailsModal() {
+  document.getElementById('details-modal').classList.remove('active');
+  detailsSessionId = null;
+}
+
+function downloadReport() {
+  if (!detailsSessionId) return;
+  window.open(`${API}/api/v1/sessions/${detailsSessionId}/report`, '_blank');
+}
+
+function openEditModal(sessionId) {
+  let session = null;
+  if (currentActiveSession && currentActiveSession.session_id === sessionId) {
+    session = currentActiveSession;
+  } else {
+    session = historySessions.find(s => s.session_id === sessionId);
+  }
+  if (!session) {
+    toast('找不到該課程資訊', 'error');
+    return;
+  }
+  
+  document.getElementById('edit_session_id').value = session.session_id;
+  document.getElementById('edit_class_name').value = session.class_name;
+  document.getElementById('edit_teacher').value = session.teacher;
+  document.getElementById('edit_room').value = session.room || '';
+  document.getElementById('edit_notes').value = session.notes || '';
+  
+  document.getElementById('edit-modal').classList.add('active');
+}
+
+function closeEditModal() {
+  document.getElementById('edit-modal').classList.remove('active');
+  document.getElementById('edit-form').reset();
+}
+
+async function handleEditSession(e) {
+  e.preventDefault();
+  const sessionId = document.getElementById('edit_session_id').value;
+  setLoading('edit-submit-btn', 'edit-spinner', true);
+  
+  const payload = {
+    class_name: document.getElementById('edit_class_name').value.trim(),
+    teacher:    document.getElementById('edit_teacher').value.trim(),
+    room:       document.getElementById('edit_room').value.trim(),
+    notes:      document.getElementById('edit_notes').value.trim()
+  };
+  
+  try {
+    await apiFetch(`/api/v1/sessions/${sessionId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload)
+    });
+    toast('✅ 課程內容修改成功！', 'success');
+    closeEditModal();
+    await refreshAll();
+  } catch (err) {
+    toast(`修改失敗：${err.data?.detail || '未知錯誤'}`, 'error');
+  } finally {
+    setLoading('edit-submit-btn', 'edit-spinner', false);
+  }
+}
+
+/* ── UTILS ─────────────────────── */
+function toast(msg, type='info') {
+  const icons = { success:'✅', error:'❌', warning:'⚠️', info:'ℹ️' };
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `<span>${icons[type]||'ℹ️'}</span><span>${msg}</span>`;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => { el.style.opacity='0'; setTimeout(()=>el.remove(),300); }, 3500);
+}
+
+// 強制將 API 回傳的 UTC 字串（無 Z 後綴）解析為 UTC，再以瀏覽器本地時區顯示
+function toUtcDate(iso) {
+  if (!iso) return null;
+  // 若字串不含時區資訊（無 Z 或 +/-），強制加 Z 確保為 UTC
+  return new Date(/[Zz]|[+\-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + 'Z');
+}
+
+function fmtDatetime(iso) {
+  if (!iso) return '—';
+  const d = toUtcDate(iso);
+  // 使用瀏覽器本地時區格式化，自動跟電腦時間一致
+  return d.toLocaleString('zh-TW', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  }).replace(/\//g, '-');
+}
+
+function fmtDuration(startIso, endIso) {
+  const s = toUtcDate(startIso);
+  const e = endIso ? toUtcDate(endIso) : new Date();
+  const secs = Math.max(0, Math.floor((e - s) / 1000));
+  const h = Math.floor(secs/3600), m = Math.floor((secs%3600)/60), sec = secs%60;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m ${sec}s`;
+}
+
+function setLoading(btnId, spinnerId, on) {
+  const btn = document.getElementById(btnId);
+  const sp  = document.getElementById(spinnerId);
+  if (on) { btn.classList.add('loading'); btn.disabled = true; sp.style.display='block'; }
+  else    { btn.classList.remove('loading'); btn.disabled = false; sp.style.display='none'; }
+}
+
+/* ── API ────────────────────────── */
+async function apiFetch(path, opts={}) {
+  const r = await fetch(API + path, {
+    headers: { 'Content-Type':'application/json' },
+    ...opts
+  });
+  const text = await r.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { message: text }; }
+  if (!r.ok) throw { status: r.status, data };
+  return data;
+}
+
+/* ── HEALTH CHECK ───────────────── */
+async function checkHealth() {
+  const dot  = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  const stat = document.getElementById('stat-api');
+  try {
+    await apiFetch('/');
+    dot.className  = 'status-dot online';
+    text.textContent = 'API 已連線';
+    stat.textContent = '✅ 在線';
+    stat.className = 'stat-value online';
+    return true;
+  } catch {
+    dot.className  = 'status-dot offline';
+    text.textContent = 'API 離線';
+    stat.textContent = '❌ 離線';
+    stat.className = 'stat-value';
+    return false;
+  }
+}
+
+/* ── ACTIVE SESSION ─────────────── */
+async function loadActiveSession() {
+  try {
+    const list = await apiFetch('/api/v1/sessions?limit=1&offset=0');
+    const active = list.find(s => !s.ended_at);
+    renderActiveSession(active || null);
+    return active;
+  } catch(e) {
+    renderActiveSession(null);
+    return null;
+  }
+}
+
+function renderActiveSession(session) {
+  const body = document.getElementById('active-session-body');
+  const panel = document.getElementById('active-session-panel');
+  const statEl = document.getElementById('stat-session-state');
+  clearInterval(timerInterval);
+  if (activeSessionPollInterval) {
+    clearInterval(activeSessionPollInterval);
+    activeSessionPollInterval = null;
+  }
+
+  if (!session) {
+    currentActiveSession = null;
+    panel.classList.remove('has-session');
+    statEl.textContent = '無課程';
+    statEl.className = 'stat-value';
+    body.innerHTML = `
+      <div class="no-session-placeholder">
+        <div class="icon">📭</div>
+        <div>目前沒有進行中的課程</div>
+        <div style="margin-top:0.5rem;font-size:0.78rem;color:var(--text-muted);">請在右側表單開始一門新課程</div>
+      </div>`;
+    document.getElementById('start-btn').disabled = false;
+    return;
+  }
+
+  currentActiveSession = session;
+  panel.classList.add('has-session');
+  statEl.textContent = '進行中 🔴';
+  statEl.className = 'stat-value live';
+  document.getElementById('start-btn').disabled = true;
+
+  body.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem;">
+      <div style="display:flex;gap:8px;align-items:center;">
+        <span class="badge badge-live">🔴 進行中</span>
+        <button class="btn btn-ghost btn-sm" onclick="openEditModal('${session.session_id}')" style="padding: 2px 6px; font-size: 0.72rem; display:inline-flex; align-items:center; gap:2px;">
+          ✏️ 編輯
+        </button>
+      </div>
+      <div style="text-align:right;">
+        <div id="session-timer">00:00:00</div>
+        <div class="timer-label">課程已進行時間</div>
+      </div>
+    </div>
+    <div class="session-info-grid">
+      <div class="session-info-item">
+        <div class="session-info-label">課程名稱</div>
+        <div class="session-info-value">${session.class_name}</div>
+      </div>
+      <div class="session-info-item">
+        <div class="session-info-label">教師</div>
+        <div class="session-info-value">${session.teacher}</div>
+      </div>
+      <div class="session-info-item">
+        <div class="session-info-label">教室</div>
+        <div class="session-info-value">${session.room || '—'}</div>
+      </div>
+      <div class="session-info-item">
+        <div class="session-info-label">開始時間</div>
+        <div class="session-info-value" style="font-size:0.85rem;">${fmtDatetime(session.started_at)}</div>
+      </div>
+    </div>
+    ${session.notes ? `<div style="background:rgba(99,179,237,0.06);border:1px solid rgba(99,179,237,0.15);border-radius:8px;padding:0.65rem 1rem;font-size:0.82rem;color:var(--text-secondary);margin-bottom:1.25rem;">📝 ${session.notes}</div>` : ''}
+    
+    <!-- Real-time metrics section -->
+    <div style="background:rgba(99,179,237,0.06);border:1px solid rgba(99,179,237,0.15);border-radius:12px;padding:1rem;margin-bottom:1.25rem;">
+      <div style="font-size:0.75rem;color:var(--text-secondary);font-weight:600;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">
+        <span>📡 即時課堂監控數據 (每 3 秒更新)</span>
+        <span id="live-indicator" style="color:var(--accent-cyan);font-weight:700;">● LIVE</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+        <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:8px;padding:8px 12px;text-align:center;">
+          <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:2px;">當前人數</div>
+          <div id="live-student-count" style="font-size:1.2rem;font-weight:700;color:var(--accent-cyan);">0</div>
+        </div>
+        <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:8px;padding:8px 12px;text-align:center;">
+          <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:2px;">當前專注度</div>
+          <div id="live-attention-score" style="font-size:1.2rem;font-weight:700;color:var(--accent-green);">100%</div>
+        </div>
+      </div>
+      <div style="margin-top:0.75rem;font-size:0.75rem;display:flex;align-items:center;gap:6px;overflow:hidden;">
+        <span style="color:var(--accent-red);font-weight:600;flex-shrink:0;">⚠️ 最新異常：</span>
+        <span id="live-latest-event" style="color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">無異常事件</span>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+    <button class="btn btn-danger btn-full" onclick="openEndModal()">🔚 結束目前課程（下課）</button>`;
+
+  // 使用 toUtcDate() 確保以 UTC 解析，計時才從 0 開始
+  const start = toUtcDate(session.started_at);
+  function tick() {
+    const now = new Date();
+    const diff = Math.max(0, Math.floor((now - start) / 1000));
+    const h = Math.floor(diff/3600), m = Math.floor((diff%3600)/60), s = diff%60;
+    const el = document.getElementById('session-timer');
+    if (el) el.textContent = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  }
+  tick();
+  timerInterval = setInterval(tick, 1000);
+
+  // Poll active metrics
+  async function pollActiveMetrics() {
+    try {
+      const data = await apiFetch(`/api/v1/sessions/${session.session_id}/realtime`);
+      const countEl = document.getElementById('live-student-count');
+      const scoreEl = document.getElementById('live-attention-score');
+      const eventEl = document.getElementById('live-latest-event');
+      
+      if (countEl) countEl.textContent = data.student_count;
+      if (scoreEl) {
+        scoreEl.textContent = `${Math.round(data.attention_score)}%`;
+        if (data.attention_score >= 80) scoreEl.style.color = 'var(--accent-green)';
+        else if (data.attention_score >= 60) scoreEl.style.color = 'var(--accent-yellow)';
+        else scoreEl.style.color = 'var(--accent-red)';
+      }
+      if (eventEl) eventEl.textContent = data.latest_event || '無異常事件';
+    } catch (err) {
+      console.warn("Polling active metrics failed:", err);
+    }
+  }
+  pollActiveMetrics();
+  activeSessionPollInterval = setInterval(pollActiveMetrics, 3000);
+}
+
+/* ── START SESSION ──────────────── */
+async function handleStartSession(e) {
+  e.preventDefault();
+  if (currentActiveSession) { toast('已有課程在進行中，請先結束目前課程', 'warning'); return; }
+  setLoading('start-btn','start-spinner',true);
+  const payload = {
+    class_name: document.getElementById('class_name').value.trim(),
+    teacher:    document.getElementById('teacher').value.trim(),
+    room:       document.getElementById('room').value.trim(),
+    notes:      document.getElementById('notes').value.trim(),
+    roi_polygon: []
+  };
+  try {
+    const res = await apiFetch('/api/v1/sessions', { method:'POST', body: JSON.stringify(payload) });
+    toast(`✅ 課程已開始！Session ID: ${res.session_id.slice(0,8)}…`, 'success');
+    document.getElementById('start-form').reset();
+    await refreshAll();
+  } catch(err) {
+    if (err.status === 409) {
+      toast('衝突：已有課程正在進行中', 'error');
+    } else {
+      toast(`開課失敗：${err.data?.detail || '未知錯誤'}`, 'error');
+    }
+  } finally {
+    setLoading('start-btn','start-spinner',false);
+  }
+}
+
+/* ── END SESSION ────────────────── */
+function openEndModal() {
+  document.getElementById('end-modal').classList.add('active');
+}
+function closeEndModal() {
+  document.getElementById('end-modal').classList.remove('active');
+}
+
+async function confirmEndSession() {
+  if (!currentActiveSession) return;
+  setLoading('confirm-end-btn','end-spinner',true);
+  const sid = currentActiveSession.session_id;
+  try {
+    await apiFetch(`/api/v1/sessions/${sid}/end`, { method:'PATCH' });
+    toast('課程已成功結束，數據已儲存！', 'success');
+    closeEndModal();
+    await refreshAll();
+  } catch(err) {
+    toast(`結束課程失敗：${err.data?.detail || '未知錯誤'}`, 'error');
+  } finally {
+    setLoading('confirm-end-btn','end-spinner',false);
+  }
+}
+
+/* ── HISTORY ────────────────────── */
+async function loadHistory() {
+  const tbody = document.getElementById('history-tbody');
+  tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="icon">⏳</div><p>載入中…</p></div></td></tr>`;
+  try {
+    const { limit, offset } = historyPage;
+    const searchVal = document.getElementById('history-search').value.trim();
+    const statusVal = document.getElementById('history-status-filter').value;
+    
+    let url = `/api/v1/sessions?limit=${limit+1}&offset=${offset}`;
+    if (searchVal) url += `&search=${encodeURIComponent(searchVal)}`;
+    if (statusVal) url += `&status=${statusVal}`;
+    
+    const list = await apiFetch(url);
+    const hasMore = list.length > limit;
+    const rows = list.slice(0, limit);
+    historySessions = rows;
+
+    document.getElementById('stat-total').textContent = offset + rows.length + (hasMore ? '+' : '');
+
+    if (rows.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="icon">📭</div><p>尚無歷史課程紀錄</p></div></td></tr>`;
+    } else {
+      tbody.innerHTML = rows.map(s => {
+        const isLive = !s.ended_at;
+        const dur = fmtDuration(s.started_at, s.ended_at);
+        return `<tr>
+          <td><strong>${s.class_name}</strong></td>
+          <td>${s.teacher}</td>
+          <td>${s.room || '—'}</td>
+          <td style="font-size:0.8rem;">${fmtDatetime(s.started_at)}</td>
+          <td style="font-size:0.8rem;">${isLive ? '<span style="color:var(--accent-green)">進行中</span>' : fmtDatetime(s.ended_at)}</td>
+          <td><span class="duration-chip">${dur}</span></td>
+          <td>${isLive ? '<span class="badge badge-live">🔴 進行中</span>' : '<span class="badge badge-ended">已結束</span>'}</td>
+          <td>
+            <div style="display:flex;gap:4px;">
+              <button class="btn btn-ghost btn-sm" onclick="openDetailsModal('${s.session_id}')" style="padding: 2px 6px; font-size: 0.72rem; display:inline-flex; align-items:center; gap:2px;" title="數據摘要">
+                📊 摘要
+              </button>
+              <button class="btn btn-ghost btn-sm" onclick="openEditModal('${s.session_id}')" style="padding: 2px 6px; font-size: 0.72rem; display:inline-flex; align-items:center; gap:2px;" title="編輯">
+                ✏️ 編輯
+              </button>
+              ${isLive ? '' : `
+              <button class="btn btn-danger btn-sm" onclick="openDeleteModal('${s.session_id}')" style="padding: 2px 6px; font-size: 0.72rem; display:inline-flex; align-items:center; gap:2px; background:var(--gradient-danger);" title="刪除">
+                🗑️ 刪除
+              </button>`}
+            </div>
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    document.getElementById('history-count').textContent = `第 ${offset+1}–${offset+rows.length} 筆`;
+    renderPagination(hasMore);
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="icon">❌</div><p>載入失敗，請確認 API 伺服器已啟動</p></div></td></tr>`;
+  }
+}
+
+function renderPagination(hasMore) {
+  const bar = document.getElementById('pagination-bar');
+  bar.innerHTML = '';
+  const { offset, limit } = historyPage;
+
+  if (offset > 0) {
+    const prevBtn = document.createElement('button');
+    prevBtn.className = 'btn btn-ghost btn-sm';
+    prevBtn.textContent = '← 上一頁';
+    prevBtn.onclick = () => { historyPage.offset = Math.max(0, offset-limit); loadHistory(); };
+    bar.appendChild(prevBtn);
+  }
+
+  if (hasMore) {
+    const nextBtn = document.createElement('button');
+    nextBtn.className = 'btn btn-ghost btn-sm';
+    nextBtn.textContent = '下一頁 →';
+    nextBtn.onclick = () => { historyPage.offset = offset+limit; loadHistory(); };
+    bar.appendChild(nextBtn);
+  }
+}
+
+/* ── REFRESH ALL ────────────────── */
+async function refreshAll() {
+  const ok = await checkHealth();
+  if (ok) {
+    await loadActiveSession();
+    await loadHistory();
+  }
+}
+
+/* ── INIT ───────────────────────── */
+refreshAll();
+setInterval(refreshAll, 30000); // auto-refresh every 30s
+</script>
+</body>
+</html>

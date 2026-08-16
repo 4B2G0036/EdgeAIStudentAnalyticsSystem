@@ -1,0 +1,155 @@
+schema: spec-driven
+
+context: |
+  ## 專案概述 (Project Overview)
+  本專案為「邊緣 AI 學生專注度與異常行為分析系統」(Edge AI Student Analytics System)，
+  以廣角 Webcam 俯瞰教室，利用電腦視覺技術即時分析學生上課狀態，並自動產出課後分析報告。
+
+  ## 技術棧 (Tech Stack)
+  - Language: Python 3.10+
+  - AI / Vision: ultralytics YOLOv8-Pose 或 YOLOv11-Pose (以 ONNX Runtime 加速推論)
+  - Tracking: ByteTrack (整合於 ultralytics)
+  - Backend: FastAPI (非同步，支援 MJPEG StreamingResponse)
+  - Frontend: Streamlit (Python-native 儀表板)
+  - Database: MongoDB 7.0+ (本機實例，使用 Time Series Collection)
+  - DB Driver: PyMongo (motor 可選，用於非同步)
+  - Data Processing: Pandas (時序平滑)
+  - Plotting: Matplotlib / Plotly (圖表生成)
+  - PDF Report: ReportLab
+  - Inference Format: ONNX (onnxruntime-gpu 優先，cpu fallback)
+  - Environment: venv (Python 虛擬環境)
+
+  ## 專案目錄結構 (Directory Structure)
+  ```
+  project_root/
+  ├── core/         # 攝影機串流、YOLO 推論、隱私遮罩、ROI、ByteTrack 追蹤
+  ├── engine/       # 專注度評分公式、FSM 連續動作分析、時序平滑
+  ├── database/     # MongoDB 連線、Collection 設計、CRUD、時序查詢
+  ├── api/          # FastAPI 應用，包含 MJPEG 串流端點、session 管理、報告觸發
+  ├── dashboard/    # Streamlit 儀表板，含 ROI 選取、即時圖表、課程管理
+  └── report/       # ReportLab PDF 自動排版與生成
+  ```
+
+  ## 核心設計決策 (Key Design Decisions)
+  - **捨棄臉部情緒辨識**：廣角俯瞰下人臉像素過小，一律以骨架節點幾何取代。
+  - **單次前向傳播**：YOLO-Pose 單一 pass 偵測全班 (可達 40+ 人) 骨架，禁止為每人執行獨立小模型。
+  - **5 FPS 硬性限制**：攝影機讀取迴圈上限嚴格鎖定 5 FPS，保護邊緣硬體不過熱降頻。
+  - **MJPEG 而非 WebRTC**：FastAPI StreamingResponse 將推論後的帶標記畫面推送至 Streamlit，
+    徹底解除 Python 多行程競爭本機攝影機 (cv2.VideoCapture) 的死鎖問題。
+  - **MongoDB Time Series Collection**：`Attention_Metrics` 必須設為 MongoDB 原生 Time Series 集合，
+    以原生最佳化應對高頻批次寫入（每批次 500 筆時序資料點），並搭配 TTL 索引（365天）自動過期。
+  - **隱私優先與順序**：YOLO 推論後得知頭部/身體 BBox 位置，立即對該區域套用高斯模糊（kernel ≥ 31×31）產生隱私版影像，然後才繪製邊框標籤；
+    骨架向量取自原始推論輸出，不受模糊影響；原始影像絕對不寫入硬碟或資料庫。
+  - ** ByteTrack 與 ID 漂移防護**：追蹤 ID 必須加上 IoU 狀態繼承機制。所有 FSM 必須綁定 `tracking_id`。
+  - **優雅停機 (Graceful Shutdown)**：處理 SIGTERM 排空佇列，確保防護機制健全。
+  - **ONNX Runtime 推論**：所有深度學習模型以 `.onnx` 格式搭配 `onnxruntime` 執行，
+    禁止在推論時期動態載入 PyTorch。
+
+  ## 評分公式 (Scoring Formula)
+  基礎分 = 0
+  + 頭部朝向黑板（Yaw 在 ±30° 且 Pitch 在 ±25° 以內）: +50 分
+  + 坐姿端正（無趴睡幾何觸發）: +50 分
+  - FSM 判定「雙手異常向下 + 頭頂下傾」(疑似手機) 達 WARNING 或 CONFIRMED 狀態: -50 分
+  - FSM 判定「肩頸距離過短」(趴睡幾何) 達 WARNING 或 CONFIRMED 狀態: -30 分
+  分數夾緊 (clamp) 至 [0, 100]
+
+  ## FSM 連續動作分析邏輯 (FSM Logic)
+  - 異常持續 < 3 秒 → `PENDING` 狀態忽略，雜訊過濾
+  - 異常持續 3~10 秒 → `WARNING` 預警，扣分但不寫入 DB
+  - 異常持續 > 10 秒 → `CONFIRMED` 確認異常，觸發寫入，斷電重啟自動接關
+  - 學生消失 > 6 秒 → `TERMINATED`，記憶體與滑動緩衝立刻銷毀
+
+  ## MongoDB Schema (Collection 規格)
+  ### Classes_Session
+  ```json
+  {
+    "_id": "ObjectId",
+    "session_id": "string（UUID v4）",
+    "class_name": "string",
+    "teacher": "string",
+    "room": "string（可選）",
+    "started_at": "ISODate",
+    "ended_at": "ISODate | null",
+    "student_count": "int（推論期間偵測到的最大學生數）",
+    "roi_polygon": "[[float, float], ...]",
+    "notes": "string（可選）"
+  }
+  ```
+  ### Attention_Metrics (Time Series Collection)
+  ```json
+  {
+    "timestamp": ISODate,        // timefield
+    "metadata": {
+      "session_id": "string",
+      "tracking_id": int
+    },
+    "attention_score": float,    // 0-100
+    "head_yaw": float,
+    "head_pitch": float,
+    "is_looking_at_board": bool,
+    "pose_flags": ["phone_suspected", "sleeping"],
+    "fsm_state": "string (NORMAL | PENDING | WARNING | CONFIRMED | TERMINATED)"
+  }
+  ```
+  ### Abnormal_Events
+  ```json
+  {
+    "_id": "ObjectId",
+    "session_id": "string",
+    "tracking_id": "int",
+    "event_type": "phone_suspected | sleeping",
+    "started_at": "ISODate",
+    "updated_at": "ISODate",
+    "ended_at": "ISODate | null（null = 事件仍在持續）",
+    "duration_seconds": "float",
+    "peak_pitch": "float（事件期間最大頭部俯仰角）",
+    "confirmed": "bool（FSM 是否已進入 CONFIRMED）"
+  }
+  ```
+
+  ## 姿態幾何規則 (Pose Geometry Rules)
+  所有「關節點」以 YOLO-Pose 的 17-keypoint COCO 格式為準。
+  關鍵索引：0=nose, 1=left_eye, 2=right_eye, 3=left_ear, 4=right_ear,
+             5=left_shoulder, 6=right_shoulder, 9=left_wrist, 10=right_wrist, 11=left_hip, 12=right_hip
+
+  ### 趴睡判定
+  - 條件：(left_shoulder.y + right_shoulder.y) / 2 的 Y 座標 與 (nose.y 或 top_of_head 估算) 差值
+    若肩頸 Y 距離 < 閾值（例如 bounding box 高度的 20%），判定為趴睡。
+
+  ### 疑似滑手機判定
+  - 條件：min(left_wrist.y, right_wrist.y) > midpoint(shoulder.y, hip.y) （手腕低於腰線中點）
+    AND head_pitch < -35°（頭部嚴重下傾）
+    則發出 `phone_suspected` 標記。
+
+  ### 頭部朝向估計策略
+  - 優先使用：nose, left_eye, right_eye（信心 ≥ 0.45）
+  - 備用（學生背對鏡頭）：改用 left_ear, right_ear, left_shoulder, right_shoulder 幾何推算
+  - 信心閾值管理：所有 keypoint confidence < 0.45 視為無效，不加入計算（全專案統一使用 0.45）
+
+  ## 人員分工 (Team Roles)
+  - 組員 A: core/ (AI 推論、骨架幾何演算法、追蹤)
+  - 組員 B: engine/, api/, database/ (評分引擎、FastAPI、MongoDB)
+  - 組員 C: dashboard/, report/ (Streamlit 儀表板、PDF 報表)
+
+  ## 編碼慣例 (Coding Conventions)
+  - 使用 Python type hints 於所有函式簽名
+  - 使用 dataclasses 或 Pydantic BaseModel 定義資料結構
+  - FastAPI Router 依模組拆分（不全寫在 main.py）
+  - 非同步 I/O（asyncio / async def）用於 DB 寫入，避免阻塞推論主迴圈
+  - 日誌使用 Python logging 模組，層級為 INFO (生產) / DEBUG (開發)
+  - 設定值（閾值、埠號、DB URI）集中於 config.py 或 .env 檔，禁止硬編碼
+
+rules:
+  proposal:
+    - 提案必須明確說明「為何不採用臉部識別」的技術決策理由
+    - 提案中的能力列表必須對應到 specs/ 子目錄中的規格文件
+  design:
+    - 設計文件必須包含至少一個說明資料流的架構圖（文字版 ASCII 可接受）
+    - 設計決策必須包含「取捨」說明
+  tasks:
+    - 每個任務拆分粒度以「半天工作量（約 4 小時）」為上限
+    - 任務必須依照 core → engine → database → api → dashboard → report 的依賴順序排列
+  spec:
+    - 每個需求必須有至少一個「情境（Scenario）」WHEN/THEN 描述
+    - 使用中文撰寫，技術術語保留英文原文
+    - 所有分數、閾值、時間常數必須是具體數值，不得使用「適當的」「合理的」等模糊詞彙
