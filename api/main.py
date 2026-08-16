@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import config
 import database
-from api.routers import sessions
+from api.routers import sessions, stream
 
 # Configure project log formats
 config.setup_logging()
@@ -20,8 +20,8 @@ logger = logging.getLogger("api.main")
 
 app = FastAPI(
     title="學生專注度與異常行為分析系統 - API 後端服務",
-    description="本後端 API 負責處理邊緣端即時 AI 視覺推論數據持久化、狀態機評分聚合、以及課程 Session 生命週期管理。",
-    version="1.0.0"
+    description="本後端 API 負責處理邊緣端即時 AI 視覺推論數據持久化、狀態機評分聚合、以及課程 Session 生命週期管理與實時攝影機串流。",
+    version="1.1.0"
 )
 
 
@@ -36,6 +36,7 @@ app.add_middleware(
 
 # Register routers
 app.include_router(sessions.router)
+app.include_router(stream.router)
 
 def self_heal_abnormal_events():
     """

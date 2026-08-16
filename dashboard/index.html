@@ -399,6 +399,71 @@
     </div>
   </div>
 
+  <!-- CAMERA LIVE STREAM MONITORING PANEL -->
+  <div class="card section-gap" id="camera-monitoring-card">
+    <div class="card-header">
+      <div class="card-title">🎥 實時攝影機與 AI 監控 (Live Stream)</div>
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <span class="badge badge-live" id="cam-status-badge">● 串流中 (5 FPS)</span>
+        <button class="btn btn-ghost btn-sm" id="toggle-privacy-btn" onclick="togglePrivacyMode()">🔒 隱私模式: 關</button>
+        <button class="btn btn-ghost btn-sm" id="toggle-stream-btn" onclick="toggleStream()">⏸ 暫停串流</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="grid-2">
+        <!-- VIDEO STREAM DISPLAY -->
+        <div style="position:relative; background:#000; border-radius:12px; overflow:hidden; display:flex; align-items:center; justify-content:center; min-height:280px; border:1px solid var(--border);">
+          <img id="camera-stream-img" src="" alt="廣角攝影機實時串流" style="width:100%; height:100%; object-fit:cover; display:block; transition: filter 0.3s;" />
+          <div id="stream-overlay-privacy" style="display:none; position:absolute; inset:0; background:rgba(10,14,26,0.92); backdrop-filter:blur(20px); flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:1.5rem;">
+            <div style="font-size:3rem; margin-bottom:0.5rem;">🙈</div>
+            <div style="font-weight:700; color:var(--accent-blue); margin-bottom:4px;">極致隱私保護模式已開啟</div>
+            <div style="font-size:0.8rem; color:var(--text-muted);">畫面已進行遮蔽保護，背景 AI 推論與指標統計持續運作中</div>
+          </div>
+          <div id="stream-placeholder" style="display:none; position:absolute; inset:0; background:rgba(10,14,26,0.95); flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:1.5rem;">
+            <div style="font-size:2.5rem; margin-bottom:0.5rem; opacity:0.5;">📹</div>
+            <div style="color:var(--text-secondary); font-size:0.9rem;">攝影機串流已暫停</div>
+          </div>
+        </div>
+
+        <!-- REAL-TIME AI STATS & METRICS HUD -->
+        <div style="display:flex; flex-direction:column; justify-content:space-between; gap:1rem;">
+          <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:12px; padding:1.25rem;">
+            <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.05em;">AI 即時分析燈號</div>
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:1rem;">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <div class="status-dot online" id="ai-heartbeat-dot"></div>
+                <span style="font-weight:600; font-size:0.9rem;" id="ai-heartbeat-text">AI 視覺推論中</span>
+              </div>
+              <span class="badge" style="background:rgba(99,179,237,0.15); color:var(--accent-blue);" id="cam-info-badge">廣角 640x480</span>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; text-align:center;">
+              <div style="background:rgba(0,0,0,0.2); padding:0.75rem; border-radius:8px;">
+                <div style="font-size:0.7rem; color:var(--text-muted);">即時專注度評分</div>
+                <div style="font-size:1.6rem; font-weight:700; color:var(--accent-green);" id="hud-score">92 分</div>
+              </div>
+              <div style="background:rgba(0,0,0,0.2); padding:0.75rem; border-radius:8px;">
+                <div style="font-size:0.7rem; color:var(--text-muted);">在線偵測人數</div>
+                <div style="font-size:1.6rem; font-weight:700; color:var(--accent-cyan);" id="hud-students">-- 人</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- REAL-TIME ALERT LOG -->
+          <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:12px; padding:1rem; flex-grow:1; display:flex; flex-direction:column;">
+            <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:8px; display:flex; justify-content:space-between;">
+              <span>🚨 即時異常行為警報</span>
+              <span style="color:var(--accent-cyan); font-size:0.7rem;">FSM 連續分析 10s</span>
+            </div>
+            <div id="hud-alert-log" style="font-size:0.8rem; color:var(--text-secondary); line-height:1.6; max-height:90px; overflow-y:auto;">
+              <div style="color:var(--accent-green); font-size:0.78rem;">🟢 目前未發送顯著異常警告 (姿勢標準)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- MAIN 2-COLUMN GRID -->
   <div class="grid-2 section-gap">
 
@@ -1105,10 +1170,64 @@ function renderPagination(hasMore) {
   }
 }
 
+/* ── CAMERA STREAM HELPERS ──────── */
+let streamActive = true;
+let privacyMode = false;
+
+function initCameraStream() {
+  const img = document.getElementById('camera-stream-img');
+  if (img && (!img.src || img.src === window.location.href)) {
+    img.src = `${API}/api/v1/stream?t=${Date.now()}`;
+  }
+}
+
+function toggleStream() {
+  const img = document.getElementById('camera-stream-img');
+  const btn = document.getElementById('toggle-stream-btn');
+  const placeholder = document.getElementById('stream-placeholder');
+  const badge = document.getElementById('cam-status-badge');
+
+  streamActive = !streamActive;
+  if (streamActive) {
+    img.src = `${API}/api/v1/stream?t=${Date.now()}`;
+    placeholder.style.display = 'none';
+    btn.textContent = '⏸ 暫停串流';
+    badge.textContent = '● 串流中 (5 FPS)';
+    badge.className = 'badge badge-live';
+    toast('📹 已啟動攝影機實時串流', 'success');
+  } else {
+    img.src = '';
+    placeholder.style.display = 'flex';
+    btn.textContent = '▶ 啟動串流';
+    badge.textContent = '⏸ 已暫停';
+    badge.className = 'badge badge-ended';
+    toast('⏸ 攝影機串流已暫停', 'info');
+  }
+}
+
+function togglePrivacyMode() {
+  privacyMode = !privacyMode;
+  const overlay = document.getElementById('stream-overlay-privacy');
+  const btn = document.getElementById('toggle-privacy-btn');
+  
+  if (privacyMode) {
+    overlay.style.display = 'flex';
+    btn.textContent = '🔓 隱私模式: 開';
+    btn.style.borderColor = 'var(--accent-blue)';
+    toast('🔒 隱私保護模式已開啟', 'info');
+  } else {
+    overlay.style.display = 'none';
+    btn.textContent = '🔒 隱私模式: 關';
+    btn.style.borderColor = 'var(--border)';
+    toast('🔓 隱私保護模式已關閉', 'info');
+  }
+}
+
 /* ── REFRESH ALL ────────────────── */
 async function refreshAll() {
   const ok = await checkHealth();
   if (ok) {
+    initCameraStream();
     await loadActiveSession();
     await loadHistory();
   }
