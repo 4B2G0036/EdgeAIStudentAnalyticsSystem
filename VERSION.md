@@ -1,14 +1,22 @@
 # 學生專注度與異常行為分析系統 (Edge AI Student Analytics System)
-## 版本說明 (Release Notes) - v0.1.0-alpha
+## 版本說明 (Release Notes) - v0.1.1
 
-- **版本號 (Version)**: `v0.1.0-alpha`
-- **打包日期 (Release Date)**: 2026-08-16
+- **版本號 (Version)**: `v0.1.1`
+- **打包日期 (Release Date)**: 2026-08-16 17:00 (Asia/Taipei)
+- **線上預覽網址 (Live URL)**: [https://studentanalytics-91cd1.web.app](https://studentanalytics-91cd1.web.app)
 - **專案名稱**: 學生專注度與異常行為分析系統 (Student Analytics System)
-- **環境需求**: Python 3.10+ / MongoDB 7.0+ (支援 Time Series Collection) / Windows 10/11
+- **環境需求**: Python 3.10+ / MongoDB 7.0+ (支援 Time Series Collection) / Node.js 18+ (用於 Firebase CLI)
 
 ---
 
 ## 1. 已完成之核心功能與進度摘要 (Completed Progress)
+
+### 雲端部署與 Firebase Hosting 整合 (Firebase Integration — `v0.1.1` 新增)
+- [x] **Firebase Hosting 發布**: 完成 `firebase.json` 與 `.firebaserc` 設定，將 `dashboard/` 前端靜態網頁成功部署上線至 `https://studentanalytics-91cd1.web.app`。
+- [x] **動態 API 網址設定 (Dynamic API Base)**:
+  - 徹底移除前端 `localhost:8000` 硬編碼限制。
+  - 在控制台右上角新增 **「⚙️ API 網址」** 互動式設定按鈕，支援 `localStorage` 持久化記錄。
+  - 支援跨網域、Cloudflare Tunnel / Ngrok 穿透網址或雲端後端無縫介接。
 
 ### 邊緣 AI 視覺核心 (Vision AI Core — `core/`)
 - [x] **攝影機串流處理 (`core/camera.py`)**: 實現 OpenCV 廣角攝影機讀取迴圈，支援 Target FPS (預設 5 FPS) 幀率鎖定，並具備 `SIGTERM` / `SIGINT` 優雅停機 (Graceful Shutdown) 機制。
@@ -35,18 +43,16 @@
   - `GET /api/v1/sessions/{id}/realtime` - 即時輪詢課程指標
 
 ### 即時儀表板 (Dashboard — `dashboard/`)
-- [x] **Streamlit / Web 靜態儀表板 (`dashboard/index.html`)**: 包含即時監控、課程設定、歷史記錄與報告下載介面。
-
-### OpenSpec 專案規範與規劃 (`openspec/` & `*.md`)
-- [x] 完整建立 OpenSpec 變更與設計文件 (`openspec/changes/student-analytics-system-init/`)。
-- [x] `implementation_plan.md` 專案實作規劃與里程碑對照。
+- [x] **Web 前端儀表板 (`dashboard/index.html`)**: 包含即時監控、課程設定、歷史記錄、報告下載與動態 API 網址切換介面。
 
 ---
 
 ## 2. 版本打包目錄結構 (Package Structure)
 
 ```
-graduate_project_v0.1.0_20260816/
+student_analytics_v0.1.1_20260816/
+├── .firebaserc                 # Firebase 專案對應設定檔
+├── firebase.json               # Firebase Hosting 發布設定檔
 ├── api/                        # FastAPI 後端服務
 │   ├── routers/
 │   │   └── sessions.py         # 課程生命週期與 REST 端點
@@ -60,22 +66,18 @@ graduate_project_v0.1.0_20260816/
 │   ├── collections.py          # Time Series 集合與 TTL 索引初始化
 │   ├── connection.py           # PyMongo 連線管理
 │   └── queries.py              # 資料庫 CRUD 與聚合查詢
-├── dashboard/                  # 前端儀表板
-│   └── index.html
+├── dashboard/                  # 前端儀表板 (已上線至 Firebase)
+│   └── index.html              # 具備動態 API 網址設定功能
 ├── openspec/                   # OpenSpec 專案規格與工作項
 │   ├── changes/
 │   │   └── student-analytics-system-init/
-│   │       ├── .openspec.yaml
-│   │       ├── design.md
-│   │       ├── proposal.md
-│   │       └── tasks.md
 │   └── config.yaml
 ├── config.py                   # 集中化環境常數設定
 ├── init_db.py                  # 資料庫初始化獨立指令
 ├── test_api.py                 # API 測試腳本
 ├── test_connection.py          # 資料庫連線測試
 ├── testcam.py                  # 攝影機硬體測試
-├── VERSION.md                  # 本版本發行說明
+├── VERSION.md                  # 本版本發行說明 (v0.1.1)
 ├── implementation_plan.md      # 系統實作規劃
 ├── project_proposal_and_architecture.md  # 系統架構與提案
 └── 學生專注度與異常行為分析系統專題製作計畫書.md  # 專題計畫書
@@ -85,6 +87,10 @@ graduate_project_v0.1.0_20260816/
 
 ## 3. 快速啟動指南 (Quick Start)
 
+### 前端線上訪問 (Web Frontend)
+訪問正式部署網址：[https://studentanalytics-91cd1.web.app](https://studentanalytics-91cd1.web.app)
+
+### 本機後端與資料庫啟動
 1. **安裝環境與相依套件**:
    ```bash
    pip install -r format_requirements.txt
@@ -95,10 +101,12 @@ graduate_project_v0.1.0_20260816/
    ```bash
    python init_db.py
    ```
-4. **啟動 FastAPI 後端服務與儀表板**:
+4. **啟動 FastAPI 後端服務**:
    ```bash
    uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
    ```
-5. **開啟儀表板與 Swagger API 文件**:
-   - 儀表板: `http://localhost:8000/dashboard`
-   - API Docs: `http://localhost:8000/docs`
+5. **雲端與本機穿透連線 (選用)**:
+   ```bash
+   npx cloudflared tunnel --url http://localhost:8000
+   ```
+   將穿透產生的 `https://xxxx.trycloudflare.com` 填入線上儀表板右上角 **「⚙️ API 網址」** 即可。

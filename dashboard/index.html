@@ -366,6 +366,7 @@
     <div id="api-status">
       <div class="status-dot" id="status-dot"></div>
       <span id="status-text">連線中…</span>
+      <button class="btn btn-ghost btn-sm" onclick="promptApiUrl()" style="margin-left: 8px; padding: 2px 8px; font-size: 0.75rem;" title="設定 API 後端網址">⚙️ API 網址</button>
     </div>
   </div>
 </header>
@@ -581,7 +582,23 @@
 </div>
 
 <script>
-const API = 'http://localhost:8000';
+let API = localStorage.getItem('API_BASE') || (
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    ? 'http://localhost:8000'
+    : window.location.origin
+);
+
+function promptApiUrl() {
+  const current = API;
+  const input = prompt('請輸入 API 後端服務網址 (例如: http://localhost:8000 或您穿透後的 URL):', current);
+  if (input !== null && input.trim() !== '') {
+    let newUrl = input.trim().replace(/\/+$/, '');
+    localStorage.setItem('API_BASE', newUrl);
+    API = newUrl;
+    toast(`已更新 API 網址為: ${API}`, 'success');
+    refreshAll();
+  }
+}
 let currentActiveSession = null;
 let timerInterval = null;
 let activeSessionPollInterval = null;
