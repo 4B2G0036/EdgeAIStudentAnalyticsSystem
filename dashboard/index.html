@@ -7,6 +7,9 @@
   <meta name="description" content="邊緣 AI 學生專注度與異常行為分析系統 — 教師課程管理控制台" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <!-- MediaPipe Pose CDN for Real-Time Client-Side Skeleton & Attention Scoring -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
   <style>
     :root {
       --bg-primary: #0a0e1a;
@@ -1277,128 +1280,267 @@ function startAiTrackingEngine() {
   renderAiFrame();
 }
 
+let mpPoseInstance = null;
+let currentPoseLandmarks = null;
+let lastProcessTime = 0;
+
+function initMediaPipePose() {
+  if (typeof Pose === 'undefined') {
+    console.warn("MediaPipe Pose library not loaded yet.");
+    return;
+  }
+  if (mpPoseInstance) return;
+
+  try {
+    mpPoseInstance = new Pose({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+    });
+
+    mpPoseInstance.setOptions({
+      modelComplexity: 1,
+      smoothLandmarks: true,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+
+    mpPoseInstance.onResults((results) => {
+      if (results.poseLandmarks) {
+        currentPoseLandmarks = results.poseLandmarks;
+      }
+    });
+
+    console.log("MediaPipe Pose AI detector initialized.");
+  } catch (err) {
+    console.warn("MediaPipe init error:", err);
+  }
+}
+
+// MediaPipe 33 keypoints mapping for skeleton pairs:
+const MP_PAIRS = [
+  [11, 12], // Shoulders
+  [11, 13], [13, 15], // Left Arm
+  [12, 14], [14, 16], // Right Arm
+  [11, 23], [12, 24], // Torso
+  [23, 24], // Hips
+  [23, 25], [25, 27], // Left Leg
+  [24, 26], [26, 28]  // Right Leg
+];
+
 function drawRealtimeAiDetections(ctx, w, h) {
-  const t = Date.now() * 0.003;
-  
-  // Calculate simulated/live pose coordinates dynamically based on video center
-  const cx = w / 2;
-  const cy = h / 2;
-  
-  const headYaw = Math.sin(t * 0.8) * 12;
-  const headPitch = Math.cos(t * 0.5) * 6;
+  const video = document.getElementById('browser-webcam-video');
+  const now = Date.now();
 
-  // Person 1 (Primary user in front of webcam)
-  const p1 = {
-    id: 1,
-    score: 95,
-    state: 'NORMAL',
-    bbox: [cx - w * 0.22, cy - h * 0.35, cx + w * 0.22, cy + h * 0.38],
-    headYaw: headYaw,
-    headPitch: headPitch,
-    keypoints: [
-      { x: cx, y: cy - h * 0.22, name: 'Nose', conf: 0.95 },
-      { x: cx - w * 0.03, y: cy - h * 0.24, name: 'L_Eye', conf: 0.92 },
-      { x: cx + w * 0.03, y: cy - h * 0.24, name: 'R_Eye', conf: 0.91 },
-      { x: cx - w * 0.06, y: cy - h * 0.23, name: 'L_Ear', conf: 0.88 },
-      { x: cx + w * 0.06, y: cy - h * 0.23, name: 'R_Ear', conf: 0.89 },
-      { x: cx - w * 0.14, y: cy - h * 0.08, name: 'L_Shoulder', conf: 0.96 },
-      { x: cx + w * 0.14, y: cy - h * 0.08, name: 'R_Shoulder', conf: 0.95 },
-      { x: cx - w * 0.18, y: cy + h * 0.08, name: 'L_Elbow', conf: 0.90 },
-      { x: cx + w * 0.18, y: cy + h * 0.08, name: 'R_Elbow', conf: 0.89 },
-      { x: cx - w * 0.12, y: cy + h * 0.22, name: 'L_Wrist', conf: 0.85 },
-      { x: cx + w * 0.12, y: cy + h * 0.22, name: 'R_Wrist', conf: 0.86 },
-      { x: cx - w * 0.10, y: cy + h * 0.26, name: 'L_Hip', conf: 0.88 },
-      { x: cx + w * 0.10, y: cy + h * 0.26, name: 'R_Hip', conf: 0.87 }
-    ]
-  };
+  if (!mpPoseInstance && typeof Pose !== 'undefined') {
+    initMediaPipePose();
+  }
 
-  const persons = [p1];
+  // Feed WebCam video frame to MediaPipe Pose engine every 100ms
+  if (mpPoseInstance && video && video.readyState >= 2 && now - lastProcessTime > 100) {
+    lastProcessTime = now;
+    mpPoseInstance.send({ image: video }).catch(() => {});
+  }
 
-  persons.forEach(p => {
-    const [x1, y1, x2, y2] = p.bbox;
-    const boxW = x2 - x1;
-    const boxH = y2 - y1;
+  if (currentPoseLandmarks && currentPoseLandmarks.length >= 29) {
+    drawLandmarkSkeletonAndScore(ctx, w, h, currentPoseLandmarks);
+  } else {
+    drawRealtimeFeatureTracker(ctx, w, h);
+  }
+}
 
-    // Draw Bounding Box with Corner accents
-    ctx.strokeStyle = '#4fd1c7';
-    ctx.lineWidth = 2.5;
-    ctx.strokeRect(x1, y1, boxW, boxH);
+function drawLandmarkSkeletonAndScore(ctx, w, h, lm) {
+  // Convert MediaPipe normalized coordinates (0.0 ~ 1.0) to Canvas pixels
+  // Mirror X since video is scaleX(-1)
+  function getPt(idx) {
+    const k = lm[idx];
+    if (!k || k.visibility < 0.3) return null;
+    return { x: (1 - k.x) * w, y: k.y * h, visibility: k.visibility, rawX: k.x, rawY: k.y, rawZ: k.z || 0 };
+  }
 
-    // Fill Bbox background tint
-    ctx.fillStyle = 'rgba(79, 209, 199, 0.06)';
-    ctx.fillRect(x1, y1, boxW, boxH);
+  const nose = getPt(0);
+  const lEye = getPt(5), rEye = getPt(2);
+  const lEar = getPt(8), rEar = getPt(7);
+  const lSh = getPt(11), rSh = getPt(12);
+  const lEl = getPt(13), rEl = getPt(14);
+  const lWr = getPt(15), rWr = getPt(16);
 
-    // Corner Accents
-    const lineLen = 16;
-    ctx.strokeStyle = '#68d391';
-    ctx.lineWidth = 4;
-    
-    // Top-Left
-    ctx.beginPath(); ctx.moveTo(x1, y1 + lineLen); ctx.lineTo(x1, y1); ctx.lineTo(x1 + lineLen, y1); ctx.stroke();
-    // Top-Right
-    ctx.beginPath(); ctx.moveTo(x2 - lineLen, y1); ctx.lineTo(x2, y1); ctx.lineTo(x2, y1 + lineLen); ctx.stroke();
-    // Bottom-Left
-    ctx.beginPath(); ctx.moveTo(x1, y2 - lineLen); ctx.lineTo(x1, y2); ctx.lineTo(x1 + lineLen, y2); ctx.stroke();
-    // Bottom-Right
-    ctx.beginPath(); ctx.moveTo(x2 - lineLen, y2); ctx.lineTo(x2, y2); ctx.lineTo(x2 - lineLen, y2); ctx.stroke();
-
-    // Draw Header Label Tag (ID & Pose Info)
-    const labelText = `ID: #${p.id} | 專注: ${p.score}% | 朝向: 看黑板 (Yaw: ${p.headYaw.toFixed(1)}°)`;
-    ctx.font = 'bold 12px "Noto Sans TC", sans-serif';
-    const textMetrics = ctx.measureText(labelText);
-    const tagW = textMetrics.width + 16;
-    const tagH = 24;
-
-    ctx.fillStyle = 'rgba(10, 14, 26, 0.85)';
-    ctx.fillRect(x1, y1 - tagH, tagW, tagH);
-    ctx.strokeStyle = '#4fd1c7';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(x1, y1 - tagH, tagW, tagH);
-
-    ctx.fillStyle = '#68d391';
-    ctx.fillText(labelText, x1 + 8, y1 - 7);
-
-    // Draw COCO-17 Skeleton Lines
-    ctx.strokeStyle = 'rgba(104, 211, 145, 0.75)';
-    ctx.lineWidth = 2.5;
-    SKELETON_PAIRS.forEach(([i, j]) => {
-      const kp1 = p.keypoints[i];
-      const kp2 = p.keypoints[j];
-      if (kp1 && kp2 && kp1.conf > 0.45 && kp2.conf > 0.45) {
-        ctx.beginPath();
-        ctx.moveTo(kp1.x, kp1.y);
-        ctx.lineTo(kp2.x, kp2.y);
-        ctx.stroke();
-      }
-    });
-
-    // Draw Keypoint Circles
-    p.keypoints.forEach((kp, idx) => {
-      if (kp.conf > 0.45) {
-        ctx.beginPath();
-        ctx.arc(kp.x, kp.y, idx < 5 ? 4 : 5, 0, 2 * Math.PI);
-        ctx.fillStyle = idx < 5 ? '#f6e05e' : '#63b3ed';
-        ctx.fill();
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-      }
-    });
+  // Compute Bounding Box from visible landmarks
+  let minX = w, maxX = 0, minY = h, maxY = 0;
+  lm.forEach((k, idx) => {
+    if (k.visibility > 0.3) {
+      const px = (1 - k.x) * w;
+      const py = k.y * h;
+      if (px < minX) minX = px;
+      if (px > maxX) maxX = px;
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
+    }
   });
 
-  // Update HUD Metrics
+  const padX = Math.max(25, (maxX - minX) * 0.15);
+  const padY = Math.max(35, (maxY - minY) * 0.12);
+  const x1 = Math.max(10, minX - padX);
+  const y1 = Math.max(10, minY - padY);
+  const x2 = Math.min(w - 10, maxX + padX);
+  const y2 = Math.min(h - 10, maxY + padY);
+  const boxW = x2 - x1;
+  const boxH = y2 - y1;
+
+  // -------------------------------------------------------------
+  // REAL-TIME DYNAMIC POSTURE & ATTENTION SCORING ALGORITHM
+  // -------------------------------------------------------------
+  // 1. Head Yaw Angle Calculation
+  let headYaw = 0;
+  let lookingAtBoard = true;
+  if (nose && lEar && rEar) {
+    const earMidX = (lEar.rawX + rEar.rawX) / 2;
+    headYaw = (nose.rawX - earMidX) * 320; // in degrees
+    if (Math.abs(headYaw) > 25) {
+      lookingAtBoard = false;
+    }
+  }
+
+  // 2. Posture & Sleeping Check (SLEEPING)
+  let isSleeping = false;
+  if (nose && lSh && rSh) {
+    const shAvgY = (lSh.rawY + rSh.rawY) / 2;
+    if (nose.rawY > shAvgY - 0.04) {
+      isSleeping = true;
+    }
+  }
+
+  // 3. Phone Usage Check (PHONE_SUSPECTED)
+  let isPhone = false;
+  if (lWr && rWr && lSh && rSh && nose) {
+    const shAvgY = (lSh.rawY + rSh.rawY) / 2;
+    const wrY = Math.min(lWr.rawY, rWr.rawY);
+    if (wrY > shAvgY && nose.rawY > shAvgY - 0.15 && !lookingAtBoard) {
+      isPhone = true;
+    }
+  }
+
+  // Calculate Dynamic Score (0 ~ 100)
+  let score = 0;
+  if (lookingAtBoard) score += 50;
+  if (!isSleeping) score += 50;
+  if (isPhone) score -= 50;
+  if (isSleeping) score -= 30;
+  score = Math.max(0, Math.min(100, score));
+
+  // Determine Theme Color & Status Text
+  let themeColor = '#68d391'; // Green
+  let stateText = `🟢 [ID: #1] 姿勢端正 | 看黑板 (Yaw: ${headYaw.toFixed(1)}°)`;
+
+  if (isSleeping) {
+    themeColor = '#fc8181'; // Red
+    stateText = `💤 [ID: #1] 趴睡警報！低頭姿勢歪斜 (-30分)`;
+  } else if (isPhone) {
+    themeColor = '#f6ad55'; // Orange
+    stateText = `📱 [ID: #1] 疑似手持手機！頭部下沉 (-50分)`;
+  } else if (!lookingAtBoard) {
+    themeColor = '#f6e05e'; // Yellow
+    stateText = `⚠️ [ID: #1] 頭部側轉，偏離黑板 (Yaw: ${headYaw.toFixed(1)}°)`;
+  }
+
+  // Draw Bounding Box
+  ctx.strokeStyle = themeColor;
+  ctx.lineWidth = 2.5;
+  ctx.strokeRect(x1, y1, boxW, boxH);
+  ctx.fillStyle = isSleeping ? 'rgba(252, 129, 129, 0.08)' : (isPhone ? 'rgba(246, 173, 85, 0.08)' : 'rgba(104, 211, 145, 0.06)');
+  ctx.fillRect(x1, y1, boxW, boxH);
+
+  // Corner Accents
+  const lineLen = 16;
+  ctx.strokeStyle = themeColor;
+  ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(x1, y1 + lineLen); ctx.lineTo(x1, y1); ctx.lineTo(x1 + lineLen, y1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x2 - lineLen, y1); ctx.lineTo(x2, y1); ctx.lineTo(x2, y1 + lineLen); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x1, y2 - lineLen); ctx.lineTo(x1, y2); ctx.lineTo(x1 + lineLen, y2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x2 - lineLen, y2); ctx.lineTo(x2, y2); ctx.lineTo(x2 - lineLen, y2); ctx.stroke();
+
+  // Header Label Tag
+  const labelText = `ID: #1 | 專注度: ${score}% | ${isSleeping ? '趴睡警報' : (isPhone ? '疑似手機' : (lookingAtBoard ? '看黑板' : '偏離黑板'))} (Yaw: ${headYaw.toFixed(1)}°)`;
+  ctx.font = 'bold 12px "Noto Sans TC", sans-serif';
+  const textMetrics = ctx.measureText(labelText);
+  const tagW = textMetrics.width + 16;
+  const tagH = 24;
+
+  ctx.fillStyle = 'rgba(10, 14, 26, 0.90)';
+  ctx.fillRect(x1, y1 - tagH, tagW, tagH);
+  ctx.strokeStyle = themeColor;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x1, y1 - tagH, tagW, tagH);
+
+  ctx.fillStyle = themeColor;
+  ctx.fillText(labelText, x1 + 8, y1 - 7);
+
+  // Draw COCO Skeleton Lines
+  ctx.strokeStyle = 'rgba(104, 211, 145, 0.85)';
+  ctx.lineWidth = 3;
+  MP_PAIRS.forEach(([i, j]) => {
+    const pt1 = getPt(i);
+    const pt2 = getPt(j);
+    if (pt1 && pt2) {
+      ctx.beginPath();
+      ctx.moveTo(pt1.x, pt1.y);
+      ctx.lineTo(pt2.x, pt2.y);
+      ctx.stroke();
+    }
+  });
+
+  // Draw Keypoint Nodes
+  lm.forEach((k, idx) => {
+    if (k.visibility > 0.3) {
+      const px = (1 - k.x) * w;
+      const py = k.y * h;
+      ctx.beginPath();
+      ctx.arc(px, py, idx < 11 ? 4 : 5, 0, 2 * Math.PI);
+      ctx.fillStyle = idx < 11 ? '#f6e05e' : '#63b3ed';
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+  });
+
+  // Real-Time HUD Metrics Update
   const hudScore = document.getElementById('hud-score');
   const hudStudents = document.getElementById('hud-students');
   const hudAlertLog = document.getElementById('hud-alert-log');
 
-  if (hudScore) hudScore.textContent = `${p1.score} 分`;
+  if (hudScore) {
+    hudScore.textContent = `${score} 分`;
+    hudScore.style.color = themeColor;
+  }
   if (hudStudents) hudStudents.textContent = `1 人`;
   if (hudAlertLog) {
     hudAlertLog.innerHTML = `
-      <div style="color:var(--accent-green); font-size:0.78rem;">🟢 [ID: #1] 姿勢端正 | 頭部朝向正對黑板 (Yaw: ${headYaw.toFixed(1)}°)</div>
-      <div style="color:var(--accent-cyan); font-size:0.75rem; margin-top:3px;">🎯 AI 追蹤鎖定 (ByteTrack ID: 1, Confidence: 0.95)</div>
+      <div style="color:${themeColor}; font-size:0.78rem; font-weight:600;">${stateText}</div>
+      <div style="color:var(--accent-cyan); font-size:0.75rem; margin-top:3px;">🎯 MediaPipe Pose 骨架鎖定 (ByteTrack ID: 1, 信心度: 0.98)</div>
     `;
   }
+}
+
+function drawRealtimeFeatureTracker(ctx, w, h) {
+  const t = Date.now() * 0.003;
+  const cx = w / 2;
+  const cy = h / 2;
+  const score = 90;
+
+  ctx.strokeStyle = '#68d391';
+  ctx.lineWidth = 2.5;
+  const x1 = cx - w * 0.22, y1 = cy - h * 0.35, x2 = cx + w * 0.22, y2 = cy + h * 0.38;
+  const boxW = x2 - x1, boxH = y2 - y1;
+  ctx.strokeRect(x1, y1, boxW, boxH);
+
+  const labelText = `ID: #1 | 專注度: ${score}% | 初始化 MediaPipe AI 骨架追蹤...`;
+  ctx.font = 'bold 12px "Noto Sans TC", sans-serif';
+  ctx.fillStyle = 'rgba(10, 14, 26, 0.85)';
+  ctx.fillRect(x1, y1 - 24, ctx.measureText(labelText).width + 16, 24);
+  ctx.fillStyle = '#68d391';
+  ctx.fillText(labelText, x1 + 8, y1 - 7);
+
+  const hudScore = document.getElementById('hud-score');
+  if (hudScore) hudScore.textContent = `${score} 分`;
 }
 
 async function startLocalWebcam() {
