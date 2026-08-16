@@ -683,12 +683,15 @@
 let API = localStorage.getItem('API_BASE') || (
   (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
     ? 'http://localhost:8000'
-    : window.location.origin
+    : 'https://nickel-establish-incorporated-hopkins.trycloudflare.com'
 );
 
 function promptApiUrl() {
   const current = API;
-  const input = prompt('請輸入 API 後端服務網址 (例如: http://localhost:8000 或您穿透後的 URL):', current);
+  const input = prompt(
+    '請輸入 FastAPI 後端服務網址:\n(例如: http://localhost:8000 或 Ngrok / Cloudflare Tunnel 穿透 URL)',
+    current
+  );
   if (input !== null && input.trim() !== '') {
     let newUrl = input.trim().replace(/\/+$/, '');
     localStorage.setItem('API_BASE', newUrl);

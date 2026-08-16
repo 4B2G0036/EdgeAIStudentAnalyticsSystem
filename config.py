@@ -40,9 +40,9 @@ AWAIT_FLUSH_TIMEOUT = float(os.getenv("AWAIT_FLUSH_TIMEOUT", "10.0"))
 
 # CORS Settings
 try:
-    CORS_ORIGINS = json.loads(os.getenv("CORS_ORIGINS", '["http://localhost:8501"]'))
+    CORS_ORIGINS = json.loads(os.getenv("CORS_ORIGINS", '["*"]'))
 except Exception:
-    CORS_ORIGINS = ["http://localhost:8501"]
+    CORS_ORIGINS = ["*"]
 
 # Localization & Timezone
 TIMEZONE = os.getenv("TIMEZONE", "Asia/Taipei")
