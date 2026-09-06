@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: student-analytics-api
+    env: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: MONGO_URI
+        sync: false
+      - key: MONGO_DB_NAME
+        value: student_analytics
+      - key: CORS_ORIGINS
+        value: '["*"]'

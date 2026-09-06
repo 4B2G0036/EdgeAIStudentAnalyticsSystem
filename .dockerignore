@@ -1,0 +1,11 @@
+.venv
+__pycache__
+.git
+.gitignore
+.env
+scratch
+releases
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
