@@ -8,7 +8,8 @@
 
 | 版本號 (Version) | 打包日期 (Release Date) | 壓縮檔名稱 | 主要核心更新內容摘要 |
 |---|---|---|---|
-| **v0.6.0** 🌟 *(最新)* | 2026-08-16 20:18 | `student_analytics_v0.6.0_20260816.zip` | MongoDB 8.3.7 CRUD 全面驗證、CORS Preflight (OPTIONS 200) 修復、Cloudflare HTTPS 穿透、core/ 8 大視覺 AI 模組實作與全系統 100% 自動化測試 |
+| **v0.7.0** 🌟 *(最新)* | 2026-09-06 22:56 | `student_analytics_v0.7.0_20260906.zip` | FastAPI RESTful API (TraceID, Metrics, Events, Realtime, Report RateLimiter)、跨環境一鍵全自動部署啟動檔 (start.bat/sh) 與 Cloudflare HTTPS 穿透 |
+| **v0.6.0** | 2026-08-16 20:18 | `student_analytics_v0.6.0_20260816.zip` | MongoDB 8.3.7 CRUD 全面驗證、CORS Preflight (OPTIONS 200) 修復、Cloudflare HTTPS 穿透、core/ 8 大視覺 AI 模組實作與全系統 100% 自動化測試 |
 | **v0.5.0** | 2026-08-16 17:51 | `student_analytics_v0.5.0_20260816.zip` | MongoDB 8.3.7 服務安裝與 Time Series Collection 測試、YOLOv8-Pose ONNX (n/m) 模型匯出與推論驗證 (21ms/103ms)、WebCam 重複函數修復 |
 | **v0.2.1** *(穩定版)* | 2026-08-16 17:23 | `student_analytics_v0.2.1_20260816.zip` | 本機 WebCam HTML5 `getUserMedia` 直連畫面修復、雙鏡頭切換模式、隱私保護遮罩、Firebase Hosting 發布 |
 | **v0.2.0** | 2026-08-16 16:30 | `student_analytics_v0.2.0_20260816.zip` | 前端儀表板互動式 `⚙️ API 網址` 設定、伺服器即時數據輪詢、介面樣式微調 |

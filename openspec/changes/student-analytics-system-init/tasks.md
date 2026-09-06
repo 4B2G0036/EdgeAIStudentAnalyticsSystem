@@ -50,12 +50,12 @@
 
 ## 5. FastAPI 後端 (API Layer — `api/`)
 
-- [ ] 5.1 實作 `api/main.py`：加上 **CORS Middleware**，讀取 `config.CORS_ORIGINS`。日誌支援 `trace_id` 紀錄。
-- [ ] 5.2 實作 `api/routers/sessions.py`：Session 生命週期端點。支援列表端點的分頁查詢 `limit/offset`。
-      `PATCH /sessions/{id}/end` 必須觸發 `AWAIT_QUEUE_FLUSH` 確保資料一致。
-- [ ] 5.3 實作 `api/routers/stream.py`：`GET /api/v1/stream` 推送符合 RFC 1341 之 MJPEG Boundary 串流。
-- [ ] 5.4 實作 `api/routers/realtime.py`：每秒讀取 GlobalSafeStorage 返回 `ClassMetrics`，供儀表板輪詢。
-- [ ] 5.5 實作 `api/routers/reports.py`：`GET /api/v1/report/{session_id}`，加上 **速率限制 (Rate Limiting)** (`API_RATE_LIMIT`)。
+- [x] 5.1 實作 `api/main.py`：加上 **CORS Middleware**，讀取 `config.CORS_ORIGINS`。日誌支援 `trace_id` 紀錄。
+- [x] 5.2 實作 `api/routers/sessions.py`：Session 生命週期端點。支援列表端點的分頁查詢 `limit/offset`。`PATCH /sessions/{id}/end` 必須觸發 `AWAIT_QUEUE_FLUSH` 確保資料一致。
+- [x] 5.3 實作 `api/routers/stream.py`：`GET /api/v1/stream` 推送符合 RFC 1341 之 MJPEG Boundary 串流。
+- [x] 5.4 實作 `api/routers/realtime.py`：每秒讀取 GlobalSafeStorage / DB 返回 `ClassMetrics`，供儀表板輪詢。
+- [x] 5.5 實作 `api/routers/reports.py`：`GET /api/v1/report/{session_id}`，加上 **速率限制 (Rate Limiting)** (`API_RATE_LIMIT`)。
+
 
 ## 6. 即時儀表板 (Dashboard — `dashboard/`)
 

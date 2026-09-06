@@ -10,6 +10,9 @@ from database.queries import (
     get_session_summary,
     update_session,
     delete_session,
-    get_active_session_metrics
+    get_active_session_metrics,
+    get_session_metrics,
+    get_session_events
 )
+
 

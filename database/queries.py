@@ -199,3 +199,52 @@ def get_active_session_metrics(session_id: str) -> dict:
     except Exception as e:
         logger.error(f"Error fetching active session metrics for {session_id}: {e}")
         return None
+
+def get_session_metrics(session_id: str, start_ts: float = None, end_ts: float = None, limit: int = 500) -> list[dict]:
+    """Query time-series attention metrics for a specific session."""
+    db = get_db()
+    query = {"metadata.session_id": session_id}
+    
+    if start_ts is not None or end_ts is not None:
+        time_cond = {}
+        if start_ts is not None:
+            time_cond["$gte"] = datetime.utcfromtimestamp(start_ts)
+        if end_ts is not None:
+            time_cond["$lte"] = datetime.utcfromtimestamp(end_ts)
+        query["timestamp"] = time_cond
+
+    try:
+        cursor = db["Attention_Metrics"].find(query, {"_id": 0})\
+                                       .sort("timestamp", ASCENDING)\
+                                       .limit(limit)
+        results = list(cursor)
+        for r in results:
+            if isinstance(r.get("timestamp"), datetime):
+                r["timestamp"] = r["timestamp"].isoformat()
+        return results
+    except Exception as e:
+        logger.error(f"Error querying session metrics for {session_id}: {e}")
+        return []
+
+def get_session_events(session_id: str, event_type: str = None) -> list[dict]:
+    """Query abnormal events for a specific session."""
+    db = get_db()
+    query = {"session_id": session_id}
+    if event_type:
+        query["event_type"] = event_type
+
+    try:
+        cursor = db["Abnormal_Events"].find(query, {"_id": 0}).sort("started_at", DESCENDING)
+        results = list(cursor)
+        for r in results:
+            if isinstance(r.get("started_at"), datetime):
+                r["started_at"] = r["started_at"].isoformat()
+            if isinstance(r.get("updated_at"), datetime):
+                r["updated_at"] = r["updated_at"].isoformat()
+            if isinstance(r.get("ended_at"), datetime):
+                r["ended_at"] = r["ended_at"].isoformat()
+        return results
+    except Exception as e:
+        logger.error(f"Error querying abnormal events for {session_id}: {e}")
+        return []
+

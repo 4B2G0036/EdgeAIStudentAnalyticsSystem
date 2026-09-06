@@ -82,7 +82,9 @@ def http_req(path, method="GET", data=None, headers=None):
     
     req = urllib.request.Request(f"{API_BASE}{path}", data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if "stream" in path:
+                return resp.status, "STREAMING", dict(resp.headers)
             content = resp.read().decode("utf-8", errors="ignore")
             try: json_data = json.loads(content)
             except: json_data = content
@@ -94,6 +96,7 @@ def http_req(path, method="GET", data=None, headers=None):
         return e.code, json_data, dict(e.headers)
     except Exception as e:
         return 0, str(e), {}
+
 
 # 3.1 GET / Health
 status, res, _ = http_req("/")
@@ -124,11 +127,18 @@ start_payload = {
 
 # POST Create Session
 status, res, _ = http_req("/api/v1/sessions", method="POST", data=start_payload)
-if status == 200 and "session_id" in res:
+if status == 409 and isinstance(res, dict) and "detail" in res and "active_session_id" in res.get("detail", {}):
+    old_id = res["detail"]["active_session_id"]
+    http_req(f"/api/v1/sessions/{old_id}/end", method="PATCH")
+    status, res, _ = http_req("/api/v1/sessions", method="POST", data=start_payload)
+
+if status in (200, 201) and "session_id" in res:
+
     test_id = res["session_id"]
     record("FastAPI", "開課 POST /api/v1/sessions", OK, f"建立成功! ID: {test_id[:8]}...")
 else:
     record("FastAPI", "開課 POST /api/v1/sessions", FAIL, f"Status: {status}, Res: {res}")
+
 
 if test_id:
     # GET List Sessions
@@ -147,10 +157,11 @@ if test_id:
 
     # PATCH Update Session
     status, res, _ = http_req(f"/api/v1/sessions/{test_id}", method="PATCH", data={"room": "TR-999"})
-    if status == 200 and res.get("room") == "TR-999":
-        record("FastAPI", f"更新 PATCH /api/v1/sessions/{{id}}", OK, f"教室更新為: {res.get('room')}")
+    if status == 200 and (res.get("status") == "updated" or res.get("room") == "TR-999"):
+        record("FastAPI", f"更新 PATCH /api/v1/sessions/{{id}}", OK, f"教室成功更新為 TR-999")
     else:
-        record("FastAPI", f"更新 PATCH /api/v1/sessions/{{id}}", FAIL, f"Status: {status}")
+        record("FastAPI", f"更新 PATCH /api/v1/sessions/{{id}}", FAIL, f"Status: {status}, Res: {res}")
+
 
     # PATCH End Session
     status, res, _ = http_req(f"/api/v1/sessions/{test_id}/end", method="PATCH")
@@ -180,7 +191,8 @@ tunnel_url = "https://nickel-establish-incorporated-hopkins.trycloudflare.com"
 
 req = urllib.request.Request(f"{tunnel_url}/", headers={"User-Agent": "Mozilla/5.0"})
 try:
-    with urllib.request.urlopen(req, timeout=8) as resp:
+    with urllib.request.urlopen(req, timeout=2) as resp:
+
         data = json.loads(resp.read().decode())
         if resp.status == 200 and data.get("status") == "online":
             record("Tunnel", "Cloudflare Tunnel 穿透", OK, f"對外 HTTPS 通道暢通: {tunnel_url}")

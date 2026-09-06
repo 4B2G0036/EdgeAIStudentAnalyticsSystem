@@ -6,13 +6,15 @@ import logging
 # Ensure current directory is in sys.path
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
-from fastapi import FastAPI
+import uuid
+from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import config
 import database
-from api.routers import sessions, stream
+from api.routers import sessions, stream, realtime, reports
 
 # Configure project log formats
 config.setup_logging()
@@ -24,11 +26,24 @@ app = FastAPI(
     version="1.1.0"
 )
 
+# Trace ID Middleware for log tracking and response headers
+class TraceIDMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        trace_id = request.headers.get("X-Trace-ID") or str(uuid.uuid4())
+        request.state.trace_id = trace_id
+        config.set_current_trace_id(trace_id)
+        response = await call_next(request)
+        response.headers["X-Trace-ID"] = trace_id
+        return response
 
-# CORS configuration - Allow all origins for web/cloud dashboard access
+app.add_middleware(TraceIDMiddleware)
+
+# CORS configuration - Allow origins from config or regex for cloud dashboard access
+origins = config.CORS_ORIGINS if hasattr(config, "CORS_ORIGINS") else ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=".*",
+    allow_origins=origins if "*" not in origins else ["*"],
+    allow_origin_regex=".*" if "*" in origins else None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -37,6 +52,9 @@ app.add_middleware(
 # Register routers
 app.include_router(sessions.router)
 app.include_router(stream.router)
+app.include_router(realtime.router)
+app.include_router(reports.router)
+
 
 def self_heal_abnormal_events():
     """

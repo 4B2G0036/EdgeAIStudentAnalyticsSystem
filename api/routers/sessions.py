@@ -328,8 +328,43 @@ async def get_realtime_metrics(session_id: str):
         )
     return metrics
 
+@router.get(
+    "/{session_id}/metrics",
+    response_model=List[dict],
+    summary="查詢課程時序專注度數據",
+    description="依據時間區間 (start_ts, end_ts) 查詢該課程的專注度時序點 (Attention_Metrics)。"
+)
+async def get_session_time_series_metrics(
+    session_id: str,
+    start_ts: Optional[float] = Query(None, description="開始時間戳記 (Epoch seconds)"),
+    end_ts: Optional[float] = Query(None, description="結束時間戳記 (Epoch seconds)"),
+    limit: int = Query(500, ge=1, le=2000, description="最大筆數限制")
+):
+    session = database.get_session_by_id(session_id)
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="找不到該課程記錄")
+    
+    return database.get_session_metrics(session_id, start_ts=start_ts, end_ts=end_ts, limit=limit)
+
+@router.get(
+    "/{session_id}/events",
+    response_model=List[dict],
+    summary="查詢課程異常事件列表",
+    description="依據異常類型 (phone_suspected, sleeping) 查詢該課程紀錄的所有異常行為。"
+)
+async def get_session_abnormal_events(
+    session_id: str,
+    type: Optional[str] = Query(None, description="異常事件類型，例如: phone_suspected 或 sleeping")
+):
+    session = database.get_session_by_id(session_id)
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="找不到該課程記錄")
+        
+    return database.get_session_events(session_id, event_type=type)
+
 async def dummy_generate_report_task(session_id: str):
     logger.info(f"[Background Task] Start generating PDF report for session: {session_id}")
     import asyncio
     await asyncio.sleep(2.0)
     logger.info(f"[Background Task] PDF report generation completed for session: {session_id}")
+
