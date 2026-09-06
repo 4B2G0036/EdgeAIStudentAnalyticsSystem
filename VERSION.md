@@ -1,18 +1,23 @@
 # 學生專注度與異常行為分析系統 (Edge AI Student Analytics System)
 
-## 版本說明 (Release Notes) - v0.7.0
+## 版本說明 (Release Notes) - v0.8.0
 
-- **版本號 (Version)**: `v0.7.0`
-- **打包日期 (Release Date)**: 2026-09-06 22:56 (Asia/Taipei)
-- **精簡版壓縮檔名稱**: `student_analytics_v0.7.0_20260906.zip`
+- **版本號 (Version)**: `v0.8.0`
+- **打包日期 (Release Date)**: 2026-09-06 23:20 (Asia/Taipei)
+- **精簡版壓縮檔名稱**: `student_analytics_v0.8.0_20260906.zip`
 - **線上預覽網址 (Live URL)**: [https://studentanalytics-91cd1.web.app](https://studentanalytics-91cd1.web.app)
-- **HTTPS 穿透 API 網址**: `https://slot-config-seventh-posting.trycloudflare.com`
 - **專案名稱**: 學生專注度與異常行為分析系統 (Student Analytics System)
 - **環境需求**: Python 3.10+ / MongoDB 7.0+ (已通過 8.3.7 測試) / HTML5 相容瀏覽器 (Chrome / Edge / Firefox)
 
 ---
 
 ## 1. 已完成之核心功能與進度摘要 (Completed Progress)
+
+### 🌐 全自動 API 對外穿透通道生成與管理 (`scripts/generate_tunnel.py`, `start_tunnel.bat`)
+- [x] **多重通道備援機制**: 整合 Cloudflare Tunnel (`trycloudflare.com`)、Pinggy SSH (`free.pinggy.online`) 與 LocalTunnel 多重備援引擎。
+- [x] **正則表達式精準擷取與狀態同步**: 使用 `re` 解析完整 HTTPS 對外網址，自動寫入 `scratch/tunnel_status.json` 並同步更新 `.env` (`PUBLIC_API_URL`)。
+- [x] **Windows 雙擊一鍵快捷啟動器 (`start_tunnel.bat`)**: 提供雙擊自動檢測/開啟 API 服務並建立對外 HTTPS 穿透網址。
+- [x] **動態狀態查詢 API (`GET /api/v1/system/tunnel`)**: 供儀表板與 Client 實時查詢公網 API 網址與通道健康狀態。
 
 ### ⚡ FastAPI RESTful API 完整端點實作 (`api/`)
 - [x] **Trace ID 日誌中介軟體 (`TraceIDMiddleware`)**: 為所有進站 HTTP 請求自動產生與攜帶 `X-Trace-ID` 標頭，並連結至全系統結構化日誌。

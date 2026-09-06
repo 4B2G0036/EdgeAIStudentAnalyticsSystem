@@ -17,7 +17,7 @@ from datetime import datetime
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 
-VERSION = "v0.7.0"
+VERSION = "v0.8.0"
 DATE_STR = datetime.now().strftime("%Y%m%d")
 ZIP_NAME = f"student_analytics_{VERSION}_{DATE_STR}.zip"
 RELEASES_DIR = os.path.join(ROOT_DIR, "releases")
@@ -36,7 +36,8 @@ INCLUDE_FILES = [
     "VERSION.md",
     "CHANGELOG.md",
     "start.bat",
-    "start.sh"
+    "start.sh",
+    "start_tunnel.bat"
 ]
 
 # Exclusion rules

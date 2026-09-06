@@ -16,7 +16,8 @@ import json
 if sys.stdout.encoding != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-zip_path = "releases/student_analytics_v0.6.0_20260816.zip"
+zip_path = "releases/student_analytics_v0.8.0_20260906.zip"
+
 extract_dir = "scratch/test_unzip_verify"
 
 print("=" * 70)
@@ -45,11 +46,13 @@ required_files = [
     "api/main.py",
     "api/routers/sessions.py",
     "api/routers/stream.py",
+    "api/routers/system.py",
     "core/camera.py",
     "database/connection.py",
     "database/collections.py",
     "database/queries.py",
     "dashboard/index.html",
+    "scripts/generate_tunnel.py",
     "scripts/test_all_features.py"
 ]
 

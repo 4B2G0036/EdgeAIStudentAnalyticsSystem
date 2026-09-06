@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import config
 import database
-from api.routers import sessions, stream, realtime, reports
+from api.routers import sessions, stream, realtime, reports, system
 
 # Configure project log formats
 config.setup_logging()
@@ -54,6 +54,8 @@ app.include_router(sessions.router)
 app.include_router(stream.router)
 app.include_router(realtime.router)
 app.include_router(reports.router)
+app.include_router(system.router)
+
 
 
 def self_heal_abnormal_events():

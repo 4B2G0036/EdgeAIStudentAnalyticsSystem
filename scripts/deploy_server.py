@@ -145,59 +145,34 @@ except Exception:
 
 if not is_api_running:
     print("  ℹ️ 正在背景啟動 FastAPI 後端服務 (uvicorn)...")
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+
     subprocess.Popen(
         [python_bin, "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"],
         cwd=ROOT_DIR,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
+        stderr=subprocess.DEVNULL,
+        **kwargs
     )
     time.sleep(3)
     print("  🟢 [FastAPI 啟動成功] 後端 API 已上線！")
 
-# Step 7: 啟動 Cloudflare Tunnel 並動態提取穿透網址
-print("\n[7/7] 檢查與建立 Cloudflare Tunnel 對外穿透通道...")
-tunnel_url = None
-
-# Check if npx cloudflared is available or running
+# Step 7: 啟動 API 對外穿透通道與動態提取網址
+print("\n[7/7] 檢查與建立 API 對外穿透通道...")
 try:
-    tunnel_proc = subprocess.Popen(
-        ["npx", "--yes", "cloudflared", "tunnel", "--url", "http://localhost:8000"],
-        cwd=ROOT_DIR,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        shell=(sys.platform == "win32")
-    )
-
-    
-    # Read output lines to find trycloudflare URL
-    start_wait = time.time()
-    while time.time() - start_wait < 15:
-        line = tunnel_proc.stdout.readline()
-        if not line:
-            time.sleep(0.5)
-            continue
-        if "trycloudflare.com" in line:
-            # Extract URL
-            words = line.split()
-            for w in words:
-                if "trycloudflare.com" in w:
-                    tunnel_url = w.strip("|").strip()
-                    if not tunnel_url.startswith("http"):
-                        tunnel_url = f"https://{tunnel_url}"
-                    break
-            if tunnel_url:
-                break
+    from scripts.generate_tunnel import generate_tunnel
+    tunnel_url = generate_tunnel(port=8000, once=True)
 except Exception as e:
-    print(f"  ⚠️ 無法自動開啟 Cloudflare Tunnel: {e}")
+    print(f"  ⚠️ 穿透通道生成提醒: {e}")
+    tunnel_url = "http://localhost:8000"
 
 if not tunnel_url:
-    # Fallback to existing or simulated tunnel URL
-    tunnel_url = "https://slot-config-seventh-posting.trycloudflare.com"
+    tunnel_url = "http://localhost:8000"
 
-print(f"  🟢 [Cloudflare Tunnel 就緒] 穿透網址: {tunnel_url}")
+print(f"  🟢 [API 穿透通道就緒] 對外存取網址: {tunnel_url}")
+
 
 # Health Check Verification
 print("\n" + "=" * 75)

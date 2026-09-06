@@ -8,7 +8,8 @@
 
 | 版本號 (Version) | 打包日期 (Release Date) | 壓縮檔名稱 | 主要核心更新內容摘要 |
 |---|---|---|---|
-| **v0.7.0** 🌟 *(最新)* | 2026-09-06 22:56 | `student_analytics_v0.7.0_20260906.zip` | FastAPI RESTful API (TraceID, Metrics, Events, Realtime, Report RateLimiter)、跨環境一鍵全自動部署啟動檔 (start.bat/sh) 與 Cloudflare HTTPS 穿透 |
+| **v0.8.0** 🌟 *(最新)* | 2026-09-06 23:20 | `student_analytics_v0.8.0_20260906.zip` | 全自動 API 對外穿透通道生成器 (`scripts/generate_tunnel.py`, `start_tunnel.bat`)、多引擎備援 (Cloudflare/Pinggy)、正則表達式 URL 解析與 `/api/v1/system/tunnel` 查詢端點 |
+| **v0.7.0** | 2026-09-06 22:56 | `student_analytics_v0.7.0_20260906.zip` | FastAPI RESTful API (TraceID, Metrics, Events, Realtime, Report RateLimiter)、跨環境一鍵全自動部署啟動檔 (start.bat/sh) 與 Cloudflare HTTPS 穿透 |
 | **v0.6.0** | 2026-08-16 20:18 | `student_analytics_v0.6.0_20260816.zip` | MongoDB 8.3.7 CRUD 全面驗證、CORS Preflight (OPTIONS 200) 修復、Cloudflare HTTPS 穿透、core/ 8 大視覺 AI 模組實作與全系統 100% 自動化測試 |
 | **v0.5.0** | 2026-08-16 17:51 | `student_analytics_v0.5.0_20260816.zip` | MongoDB 8.3.7 服務安裝與 Time Series Collection 測試、YOLOv8-Pose ONNX (n/m) 模型匯出與推論驗證 (21ms/103ms)、WebCam 重複函數修復 |
 | **v0.2.1** *(穩定版)* | 2026-08-16 17:23 | `student_analytics_v0.2.1_20260816.zip` | 本機 WebCam HTML5 `getUserMedia` 直連畫面修復、雙鏡頭切換模式、隱私保護遮罩、Firebase Hosting 發布 |
@@ -20,7 +21,22 @@
 
 ## 📝 詳細版本變更內容 (Detailed Release Notes)
 
-### 🚀 v0.6.0 — 全系統整合驗證、CORS 修復與 邊緣 AI 核心模組 (2026-08-16 20:18)
+### 🌐 v0.8.0 — 全自動 API 對外穿透通道生成與管理功能 (2026-09-06 23:20)
+
+- **檔案名稱**: `student_analytics_v0.8.0_20260906.zip`
+- **線上體驗網址**: [https://studentanalytics-91cd1.web.app](https://studentanalytics-91cd1.web.app)
+
+#### ✨ 新增功能與技術改進
+1. **🌐 全自動 API 穿透通道生成器 (`scripts/generate_tunnel.py`)**:
+   - 支援 **Cloudflare Tunnel**、**Pinggy SSH** 與 **LocalTunnel** 多引擎自動備援切換。
+   - 使用精準正則表達式擷取公網 HTTPS 網址，防範非標準輸出字串截斷問題。
+   - 自動將當前通道狀態寫入 `scratch/tunnel_status.json` 並同步寫入 `.env` 中的 `PUBLIC_API_URL`。
+2. **🚀 Windows 雙擊快捷啟動檔 (`start_tunnel.bat`)**:
+   - 新增 Windows `start_tunnel.bat` 雙擊一鍵穿透快捷腳本。
+3. **📡 系統狀態與穿透網址查詢端點 (`GET /api/v1/system/tunnel`)**:
+   - 提供 RESTful 端點供前端儀表板實時查詢最新動態生成之對外 HTTPS API 位址。
+4. **📦 自動化部署與驗證套件升級**:
+   - 升級 `scripts/deploy_server.py` [7/7] 步驟整合穿透通道功能，並更新 `scripts/verify_zip_deployable.py` 檢查清單。
 
 - **檔案名稱**: `student_analytics_v0.6.0_20260816.zip` (11.59 MB 精簡實用版)
 - **線上體驗網址**: [https://studentanalytics-91cd1.web.app](https://studentanalytics-91cd1.web.app)
