@@ -248,3 +248,41 @@ def get_session_events(session_id: str, event_type: str = None) -> list[dict]:
         logger.error(f"Error querying abnormal events for {session_id}: {e}")
         return []
 
+
+
+def write_attention_metric(session_id, attention_score, student_count):
+    "Write a single attention metric point to Attention_Metrics collection."
+    db = get_db()
+    try:
+        doc = {
+            "timestamp": datetime.utcnow(),
+            "metadata": {"session_id": session_id},
+            "attention_score": float(attention_score),
+            "student_count": int(student_count)
+        }
+        db["Attention_Metrics"].insert_one(doc)
+        return True
+    except Exception as e:
+        logger.error(f"Failed metric write: {e}")
+        return False
+
+
+def write_abnormal_event(session_id, student_id, event_type):
+    "Write an abnormal event record to Abnormal_Events collection."
+    db = get_db()
+    try:
+        doc = {
+            "session_id": session_id,
+            "student_id": student_id,
+            "event_type": event_type,
+            "started_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+            "ended_at": None,
+            "ended_reason": None
+        }
+        db["Abnormal_Events"].insert_one(doc)
+        return True
+    except Exception as e:
+        logger.error(f"Failed event write: {e}")
+        return False
+

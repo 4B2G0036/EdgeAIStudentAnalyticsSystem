@@ -473,11 +473,11 @@
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; text-align:center;">
               <div style="background:rgba(0,0,0,0.2); padding:0.75rem; border-radius:8px;">
                 <div style="font-size:0.7rem; color:var(--text-muted);">即時專注度評分</div>
-                <div style="font-size:1.6rem; font-weight:700; color:var(--accent-green);" id="hud-score">92 分</div>
+                <div style="font-size:1.6rem; font-weight:700; color:var(--accent-green);" id="hud-score">100 分</div>
               </div>
               <div style="background:rgba(0,0,0,0.2); padding:0.75rem; border-radius:8px;">
                 <div style="font-size:0.7rem; color:var(--text-muted);">在線偵測人數</div>
-                <div style="font-size:1.6rem; font-weight:700; color:var(--accent-cyan);" id="hud-students">-- 人</div>
+                <div style="font-size:1.6rem; font-weight:700; color:var(--accent-cyan);" id="hud-students">0 人</div>
               </div>
             </div>
           </div>
@@ -1214,6 +1214,55 @@ let streamActive = true;
 let privacyMode = false;
 let activeSource = 'webcam'; // 'webcam' or 'server'
 let localStream = null;
+let webcamInferInterval = null;
+const inferCanvas = document.createElement('canvas');
+inferCanvas.width = 480;
+inferCanvas.height = 360;
+const inferCtx = inferCanvas.getContext('2d');
+let isUploadingFrame = false;
+
+function startWebcamInference() {
+  if (webcamInferInterval) clearInterval(webcamInferInterval);
+  webcamInferInterval = setInterval(async () => {
+    const video = document.getElementById('browser-webcam-video');
+    if (!video || !localStream || video.paused || video.ended || isUploadingFrame) return;
+    if (video.videoWidth === 0 || video.videoHeight === 0) return;
+
+    try {
+      isUploadingFrame = true;
+      inferCtx.drawImage(video, 0, 0, inferCanvas.width, inferCanvas.height);
+      inferCanvas.toBlob(async (blob) => {
+        if (!blob) { isUploadingFrame = false; return; }
+        try {
+          const res = await fetch(`${API}/api/v1/realtime/frame`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'image/jpeg' },
+            body: blob
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.status === 'ok') {
+              updateHudUI(data.attention_score, data.student_count, data.latest_event, data.events);
+            }
+          }
+        } catch (postErr) {
+          console.warn("Webcam infer upload failed:", postErr);
+        } finally {
+          isUploadingFrame = false;
+        }
+      }, 'image/jpeg', 0.65);
+    } catch(err) {
+      isUploadingFrame = false;
+    }
+  }, 800);
+}
+
+function stopWebcamInference() {
+  if (webcamInferInterval) {
+    clearInterval(webcamInferInterval);
+    webcamInferInterval = null;
+  }
+}
 
 async function startLocalWebcam() {
   const video = document.getElementById('browser-webcam-video');
@@ -1256,12 +1305,17 @@ async function startLocalWebcam() {
     video.style.display = 'block';
     if (permOverlay) permOverlay.style.display = 'none';
 
+    video.onloadedmetadata = () => {
+      startWebcamInference();
+    };
+    startWebcamInference();
+
     if (badge) {
-      badge.textContent = '● WebCam 已連線';
+      badge.textContent = '● WebCam 已連線 (AI 分析中)';
       badge.className = 'badge badge-live';
     }
     if (infoBadge) {
-      infoBadge.textContent = '本機 WebCam HD';
+      infoBadge.textContent = '本機 WebCam HD (AI 姿態分析)';
     }
     toast('✅ 已成功連接本機 WebCam 鏡頭！', 'success');
   } catch (err) {
@@ -1277,6 +1331,7 @@ async function startLocalWebcam() {
 }
 
 function stopLocalWebcam() {
+  stopWebcamInference();
   if (localStream) {
     localStream.getTracks().forEach(track => track.stop());
     localStream = null;
@@ -1419,6 +1474,87 @@ function togglePrivacyMode() {
   }
 }
 
+/* ── HUD REALTIME & AI METRICS ──── */
+let hudPollInterval = null;
+const alertHistory = [];  // keep last 15 alert strings
+
+function updateHudUI(score, students, latestEvent, events) {
+  const scoreEl = document.getElementById('hud-score');
+  const studentsEl = document.getElementById('hud-students');
+  const alertLog = document.getElementById('hud-alert-log');
+  const heartbeatText = document.getElementById('ai-heartbeat-text');
+  const heartbeatDot = document.getElementById('ai-heartbeat-dot');
+
+  // Update Score
+  if (scoreEl && score !== undefined && score !== null) {
+    const s = Math.round(score);
+    scoreEl.textContent = `${s} 分`;
+    if (s >= 80) scoreEl.style.color = 'var(--accent-green)';
+    else if (s >= 50) scoreEl.style.color = 'var(--accent-yellow)';
+    else scoreEl.style.color = 'var(--accent-red)';
+  }
+
+  // Update Students count - always show "X 人", never "--人"
+  if (studentsEl) {
+    const count = (students !== undefined && students !== null && students !== '--') ? students : 0;
+    studentsEl.textContent = `${count} 人`;
+  }
+
+  // Heartbeat Indicator
+  if (heartbeatText) heartbeatText.textContent = 'AI 視覺推論中';
+  if (heartbeatDot) heartbeatDot.className = 'status-dot online';
+
+  // Process and render Alerts
+  if (alertLog) {
+    const now = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+    const newAlerts = [];
+
+    if (events && Array.isArray(events) && events.length > 0) {
+      for (const ev of events) {
+        newAlerts.push(`[${now}] ⚠️ ${ev}`);
+      }
+    } else if (latestEvent && latestEvent !== '' && latestEvent !== '無異常事件' && latestEvent !== '姿態標準 (專注聽講)' && !latestEvent.includes('待命')) {
+      newAlerts.push(`[${now}] ⚠️ ${latestEvent}`);
+    }
+
+    for (const entry of newAlerts) {
+      if (alertHistory.length === 0 || alertHistory[alertHistory.length - 1] !== entry) {
+        alertHistory.push(entry);
+      }
+    }
+
+    if (alertHistory.length > 15) {
+      alertHistory.splice(0, alertHistory.length - 15);
+    }
+
+    if (alertHistory.length > 0) {
+      alertLog.innerHTML = alertHistory.slice().reverse().map(e =>
+        `<div style="color:var(--accent-yellow); font-size:0.78rem; margin-bottom:3px; display:flex; align-items:center; gap:4px;">
+           <span>${e}</span>
+         </div>`
+      ).join('');
+    } else {
+      alertLog.innerHTML = `<div style="color:var(--accent-green); font-size:0.78rem;">🟢 目前未發送顯著異常警告 (姿勢標準)</div>`;
+    }
+  }
+}
+
+async function pollHud() {
+  try {
+    const data = await apiFetch('/api/v1/realtime');
+    // If active webcam is not uploading frames or server stream is active, poll updates HUD
+    if (activeSource !== 'webcam' || !localStream) {
+      updateHudUI(data.attention_score, data.active_student_count, data.latest_event);
+    }
+  } catch(err) {
+    console.warn('HUD poll failed:', err);
+    const heartbeatDot = document.getElementById('ai-heartbeat-dot');
+    const heartbeatText = document.getElementById('ai-heartbeat-text');
+    if (heartbeatDot) heartbeatDot.className = 'status-dot offline';
+    if (heartbeatText) heartbeatText.textContent = 'API 連線中斷';
+  }
+}
+
 /* ── REFRESH ALL ────────────────── */
 async function refreshAll() {
   const ok = await checkHealth();
@@ -1435,6 +1571,9 @@ document.addEventListener('DOMContentLoaded', () => {
   if (permOverlay) permOverlay.style.display = 'flex';
   refreshAll();
   setInterval(refreshAll, 30000);
+  // Start HUD polling immediately and every 3 seconds
+  pollHud();
+  hudPollInterval = setInterval(pollHud, 3000);
 });
 </script>
 </body>

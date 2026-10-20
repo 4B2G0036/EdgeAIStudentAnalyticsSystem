@@ -320,12 +320,25 @@ async def delete_session_record(session_id: str):
     description="依課程 UUID 輪詢即時專注度、人數與最新警告訊息。"
 )
 async def get_realtime_metrics(session_id: str):
-    metrics = database.get_active_session_metrics(session_id)
-    if not metrics:
+    # Always return a valid response – even when Attention_Metrics is empty for this session.
+    # Returning 404 would cause the JS poll to throw and stop updating the HUD.
+    from datetime import datetime as _dt
+    session = database.get_session_by_id(session_id)
+    if not session:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="找不到該課程即時指標"
+            detail="找不到該課程記錄"
         )
+    metrics = database.get_active_session_metrics(session_id)
+    if not metrics:
+        # Session exists but no AI data pushed yet – return sensible defaults
+        metrics = {
+            "session_id": session_id,
+            "attention_score": 100.0,
+            "student_count": 0,
+            "total_abnormal_events": 0,
+            "latest_event": ""
+        }
     return metrics
 
 @router.get(
