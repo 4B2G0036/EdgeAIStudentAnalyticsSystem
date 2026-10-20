@@ -119,8 +119,87 @@ if not os.path.exists(env_file):
 else:
     print("  🟢 [.env 就緒] 檢測到現有 .env 設定檔")
 
+# Helper functions for bulletproof startup
+def check_socket_port(host="127.0.0.1", port=8000, timeout=1.0):
+    """檢測本機指定的網路埠號是否已在監聽中"""
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            return s.connect_ex((host, port)) == 0
+    except Exception:
+        return False
+
+
+def ensure_mongodb_running():
+    """檢查並自癒啟動 MongoDB 服務"""
+    if check_socket_port("127.0.0.1", 27017, timeout=1.0):
+        return True
+
+    print("  ℹ️ 檢測到 MongoDB 尚未在 27017 埠運作，嘗試喚醒本機服務...")
+    if sys.platform == "win32":
+        try:
+            subprocess.run("net start MongoDB", shell=True, capture_output=True, text=True)
+        except Exception:
+            pass
+    elif sys.platform == "darwin":
+        subprocess.run(["brew", "services", "start", "mongodb-community"], capture_output=True)
+    else:
+        subprocess.run(["sudo", "systemctl", "start", "mongod"], capture_output=True)
+
+    for _ in range(5):
+        time.sleep(1)
+        if check_socket_port("127.0.0.1", 27017, timeout=1.0):
+            print("  🟢 [MongoDB 自動喚醒成功] 本機資料庫服務已在線！")
+            return True
+
+    print("  ⚠️ [警告] 無法自動啟動 MongoDB，請手動確認 MongoDB 服務是否已安裝並啟動。")
+    return False
+
+
+def reclaim_port(port=8000):
+    """檢測並安全清理 Port 8000 上的殭屍進程，避免 Address already in use"""
+    if not check_socket_port("127.0.0.1", port, timeout=0.8):
+        return
+
+    try:
+        req = urllib.request.Request(f"http://localhost:{port}/health")
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data.get("status") == "healthy" and data.get("database", {}).get("status") == "connected":
+                    return
+    except Exception:
+        pass
+
+    print(f"  ⚠️ 檢測到 Port {port} 存在非活躍或異常進程，正在進行安全釋放...")
+    if sys.platform == "win32":
+        try:
+            out = subprocess.check_output(f"netstat -ano | findstr :{port}", shell=True, text=True)
+            killed_pids = set()
+            for line in out.strip().splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and "LISTENING" in parts[3].upper():
+                    pid = parts[4]
+                    if pid not in killed_pids and pid != "0":
+                        subprocess.run(f"taskkill /F /PID {pid}", shell=True, capture_output=True)
+                        killed_pids.add(pid)
+            if killed_pids:
+                print(f"  🟢 [Port {port} 已釋放] 已清理舊進程 PID: {', '.join(killed_pids)}")
+                time.sleep(1.5)
+        except Exception as e:
+            print(f"  ⚠️ 清理 Port {port} 失敗: {e}")
+    else:
+        try:
+            subprocess.run(f"fuser -k {port}/tcp", shell=True, capture_output=True)
+            time.sleep(1.0)
+        except Exception:
+            pass
+
+
 # Step 5: 執行 MongoDB 初始化
 print("\n[5/7] 初始化 MongoDB 資料庫集合與時序索引...")
+ensure_mongodb_running()
 init_db_script = os.path.join(ROOT_DIR, "init_db.py")
 try:
     res = subprocess.run([python_bin, init_db_script], capture_output=True, text=True, encoding="utf-8", errors="replace")
@@ -129,35 +208,78 @@ try:
     else:
         print(f"  ⚠️ [MongoDB 訊息] {res.stdout.strip()}")
 except Exception as e:
-        print(f"  🔴 [MongoDB 警告] 連線失敗 (請確認本機 MongoDB 服務已啟動): {e}")
+    print(f"  🔴 [MongoDB 警告] 連線失敗 (請確認本機 MongoDB 服務已啟動): {e}")
 
 # Step 6: 啟動 FastAPI 後端 API (8000 埠)
 print("\n[6/7] 檢查並啟動 FastAPI 後端 API 服務 (http://localhost:8000)...")
-is_api_running = False
+reclaim_port(port=8000)
+
+log_dir = os.path.join(ROOT_DIR, "scratch")
+os.makedirs(log_dir, exist_ok=True)
+uvicorn_log_file = os.path.join(log_dir, "uvicorn_server.log")
+
+is_api_healthy = False
+db_latency = None
 try:
-    req = urllib.request.Request("http://localhost:8000/")
-    with urllib.request.urlopen(req, timeout=2) as resp:
+    req = urllib.request.Request("http://localhost:8000/health")
+    with urllib.request.urlopen(req, timeout=1.5) as resp:
         if resp.status == 200:
-            is_api_running = True
-            print("  🟢 [FastAPI 就緒] 8000 埠 API 已在線運作中")
+            data = json.loads(resp.read().decode("utf-8"))
+            if data.get("status") == "healthy" and data.get("database", {}).get("status") == "connected":
+                is_api_healthy = True
+                db_latency = data.get("database", {}).get("latency_ms")
+                print(f"  🟢 [FastAPI 就緒] API 服務已在線，MongoDB 延遲: {db_latency} ms")
 except Exception:
     pass
 
-if not is_api_running:
-    print("  ℹ️ 正在背景啟動 FastAPI 後端服務 (uvicorn)...")
+if not is_api_healthy:
+    print("  ℹ️ 正在背景啟動 FastAPI 後端服務 (日誌寫入 scratch/uvicorn_server.log)...")
     kwargs = {}
     if sys.platform == "win32":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        # DETACHED_PROCESS (0x00000008) + CREATE_NEW_PROCESS_GROUP (0x00000200)
+        kwargs["creationflags"] = 0x00000008 | 0x00000200
+
+    log_fp = open(uvicorn_log_file, "a", encoding="utf-8")
+    log_fp.write(f"\n--- Server Starting at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+    log_fp.flush()
 
     subprocess.Popen(
         [python_bin, "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"],
         cwd=ROOT_DIR,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_fp,
+        stderr=subprocess.STDOUT,
         **kwargs
     )
-    time.sleep(3)
-    print("  🟢 [FastAPI 啟動成功] 後端 API 已上線！")
+
+    print("  ⏳ 正在驗證 API 服務與資料庫握手狀態 (Active Health Polling)...")
+    for attempt in range(15):
+        time.sleep(1)
+        try:
+            req = urllib.request.Request("http://localhost:8000/health")
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    if data.get("status") == "healthy" and data.get("database", {}).get("status") == "connected":
+                        is_api_healthy = True
+                        db_latency = data.get("database", {}).get("latency_ms")
+                        print(f"  🟢 [驗證通過] FastAPI 後端啟動成功！MongoDB 連線延遲: {db_latency} ms")
+                        break
+        except Exception:
+            continue
+
+    if not is_api_healthy:
+        print("  🔴 [啟動驗證超時] FastAPI 在 15 秒內未回報健康狀態，最後診斷日誌：")
+        print("  " + "-" * 60)
+        try:
+            with open(uvicorn_log_file, "r", encoding="utf-8", errors="replace") as lf:
+                lines = lf.readlines()[-15:]
+                for l in lines:
+                    print(f"    {l.rstrip()}")
+        except Exception:
+            pass
+        print("  " + "-" * 60)
+        print("  請檢查上方報錯並修正後再重新執行。")
+        sys.exit(1)
 
 # Step 7: 啟動 API 對外穿透通道與動態提取網址
 print("\n[7/7] 檢查與建立 API 對外穿透通道...")
@@ -181,6 +303,7 @@ print("=" * 75)
 print(f"  🌐 靜態儀表板 Web 體驗: https://studentanalytics-91cd1.web.app")
 print(f"  💻 本機儀表板位址:       http://localhost:8000/dashboard")
 print(f"  📡 後端 API 服務位址:    http://localhost:8000")
+print(f"  🩺 資料庫健康診斷端點:   http://localhost:8000/health (連線延遲: {db_latency} ms)")
 print(f"  🔒 HTTPS 對外穿透網址:   {tunnel_url}")
 print(f"  📚 Swagger API 互動文件: {tunnel_url}/docs")
 print("=" * 75)

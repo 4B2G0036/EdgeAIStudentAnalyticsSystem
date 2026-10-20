@@ -11,8 +11,10 @@ echo "🚀 正在為您啟動【學生專注度與異常行為分析系統】...
 echo "======================================================================="
 echo ""
 
-# Find python3 or python
-if command -v python3 &>/dev/null; then
+# Find python in .venv or system
+if [ -f ".venv/bin/python" ]; then
+    PYTHON_CMD=".venv/bin/python"
+elif command -v python3 &>/dev/null; then
     PYTHON_CMD="python3"
 elif command -v python &>/dev/null; then
     PYTHON_CMD="python"
