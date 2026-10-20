@@ -1,6 +1,7 @@
 import os
 import sys
 from datetime import datetime
+import time
 import logging
 
 # Ensure current directory is in sys.path
@@ -38,12 +39,11 @@ class TraceIDMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(TraceIDMiddleware)
 
-# CORS configuration - Allow origins from config or regex for cloud dashboard access
-origins = config.CORS_ORIGINS if hasattr(config, "CORS_ORIGINS") else ["*"]
+# CORS configuration - Allow all web origins (localhost, Cloudflare Tunnel, Firebase Hosting)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins if "*" not in origins else ["*"],
-    allow_origin_regex=".*" if "*" in origins else None,
+    allow_origins=["*"],
+    allow_origin_regex=r"^https?://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -126,9 +126,42 @@ async def shutdown_event():
 
 @app.get("/", include_in_schema=False)
 def read_root():
+    db_status = "unknown"
+    try:
+        db = database.get_db()
+        db.client.admin.command('ping')
+        db_status = "connected"
+    except Exception as e:
+        db_status = f"error: {str(e)}"
+
     return {
         "status": "online",
         "appName": "Student Analytics System API Backend",
+        "database": db_status,
+        "currentTime": datetime.utcnow().isoformat()
+    }
+
+@app.get("/health", tags=["系統與連線狀態"], summary="系統與資料庫健康檢查")
+def health_check():
+    db_status = "disconnected"
+    latency_ms = None
+    try:
+        t0 = time.time()
+        db = database.get_db()
+        db.client.admin.command('ping')
+        latency_ms = round((time.time() - t0) * 1000, 2)
+        db_status = "connected"
+    except Exception as e:
+        db_status = f"error: {str(e)}"
+
+    return {
+        "status": "healthy" if db_status == "connected" else "degraded",
+        "database": {
+            "status": db_status,
+            "target": config.MONGO_URI,
+            "name": config.MONGO_DB_NAME,
+            "latency_ms": latency_ms
+        },
         "currentTime": datetime.utcnow().isoformat()
     }
 

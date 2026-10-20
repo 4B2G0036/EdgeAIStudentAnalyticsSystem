@@ -681,10 +681,13 @@
 
 <script>
 let API = localStorage.getItem('API_BASE') || (
-  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-    ? 'http://localhost:8000'
-    : 'https://nickel-establish-incorporated-hopkins.trycloudflare.com'
+  (window.location.pathname.startsWith('/dashboard') || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    ? window.location.origin
+    : 'https://physically-cdna-dat-binary.trycloudflare.com'
 );
+if (API && (API.endsWith('/dashboard') || API.endsWith('/dashboard/'))) {
+  API = API.replace(/\/dashboard\/?$/, '');
+}
 
 function promptApiUrl() {
   const current = API;
