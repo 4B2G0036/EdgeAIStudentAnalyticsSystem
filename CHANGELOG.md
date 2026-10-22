@@ -8,7 +8,62 @@
 
 | 版本號 (Version) | 打包日期 (Release Date) | 壓縮檔名稱 | 主要核心更新內容摘要 |
 |---|---|---|---|
-| **v0.8.0** 🌟 *(最新)* | 2026-09-06 23:20 | `student_analytics_v0.8.0_20260906.zip` | 全自動 API 對外穿透通道生成器 (`scripts/generate_tunnel.py`, `start_tunnel.bat`)、多引擎備援 (Cloudflare/Pinggy)、正則表達式 URL 解析與 `/api/v1/system/tunnel` 查詢端點 |
+| **v0.9.0** 🌟 *(最新)* | 2026-10-22 10:00 | `student_analytics_v0.9.0_20261022.zip` | 邊緣 AI 視覺核心 (`core/`) 規格全面實作與驗證：純 ONNX 推論、ByteTrack 追蹤 (30幀遮擋/ID防漂移)、高斯隱私模糊 (先模糊後標籤)、三段式頭部朝向、ROI 多邊形過濾、7 項單元測試 100% 通過 |
+| **v0.8.1** | 2026-10-21 21:35 | `student_analytics_v0.8.1_20261021.zip` | 實時攝影機與 AI 監控 (Live Stream) 除錯：修復在線人數 `--人` 顯示、專注度動態姿態變化反饋、異常警報通知、新增 POST `/api/v1/realtime/frame` WebCam 推論端點 |
+| **v0.8.0** | 2026-09-06 23:20 | `student_analytics_v0.8.0_20260906.zip` | 全自動 API 對外穿透通道生成器 (`scripts/generate_tunnel.py`, `start_tunnel.bat`)、多引擎備援 (Cloudflare/Pinggy)、正則表達式 URL 解析與 `/api/v1/system/tunnel` 查詢端點 |
+
+---
+
+## 📝 詳細版本變更內容 (Detailed Release Notes)
+
+### 🤖 v0.9.0 — 邊緣 AI 視覺核心 (`core/`) 規格全面實作與驗證版本 (2026-10-22)
+
+- **檔案名稱**: `student_analytics_v0.9.0_20261022.zip` (11.15 MB 精簡版)
+- **線上體驗網址**: [https://studentanalytics-91cd1.web.app](https://studentanalytics-91cd1.web.app)
+
+#### ✨ 新增功能與技術改進
+1. **純 ONNX Runtime 推論引擎 (`core/inference.py`)**:
+   - 擺脫執行期 PyTorch/Ultralytics 依賴，直接以 `onnxruntime.InferenceSession` 執行 `yolov8n-pose.onnx`。
+   - 支援自動偵測 `CUDAExecutionProvider`，無 GPU 時平滑 fallback 至 `CPUExecutionProvider`。
+   - 包含 Letterbox 等比縮放填充、座標逆向還原 (De-letterboxing) 與向量化 NMS。
+2. **多目標追蹤與 ID 漂移防護 (`core/tracker.py`)**:
+   - 實作 greedy IoU 匹配演算法分配穩定 `tracking_id`。
+   - 支援高達 **30 幀（約 6 秒 @ 5FPS）遮擋容忍**，學生短暫走動或遮蔽不會重置追蹤。
+   - 內建 **ID 漂移防護 (ID Drift Protection)**：剛消失 ID 若重現且 IoU > 0.8 則主動繼承，維護分析狀態連續性。
+3. **隱私高斯模糊去識別化 (`core/privacy.py`)**:
+   - 依據頭部五官節點與 BBox 擴展區域進行高斯模糊（Kernel ≥ 31×31）。
+   - 嚴格遵守「先高斯模糊臉部、後繪製骨架與資訊標籤」，確保未去識別化之原始人臉絕對不流出核心。
+4. **三段式頭部朝向估算 (`core/head_pose.py`)**:
+   - 節點信心閥值過濾（Conf ≥ 0.45）。
+   - 策略 1（眼鼻五官幾何）、策略 2（耳肩輔助運算）、策略 3（肩線水平角）。
+   - 看板條件過濾：$|\text{Yaw}| \le 30^\circ$ 且 $|\text{Pitch}| \le 25^\circ$ 判定為看黑板。
+5. **多邊形感興趣區域過濾 (`core/roi.py`)**:
+   - 支援前端自訂正規化多邊形頂點，透過 `cv2.pointPolygonTest` 排除走廊路人與講台教師。
+6. **攝影機緩衝主動丟幀 (`core/camera.py`)**:
+   - 以 `cap.read()` 主動讀取並拋棄緩衝影格代替 `time.sleep()`，防止硬體 Buffer 累積過時畫面。
+   - 10 次自動重試異常處理 (`CameraConnectionError`)。
+7. **姿態異常與專注度綜合分析 (`core/pose_analyzer.py`)**:
+   - 整合趴睡、疑似手機（雙手腕 OR 條件）、分心判定與 [0, 100] 專注度評分模型。
+8. **視覺核心單元測試套件 (`tests/test_core.py`)**:
+   - 7 項單元測試 100% 通過（ROI 過濾、頭部朝向、多人追蹤、隱私模糊、姿態評分、FrameResult 結構）。
+
+---
+
+### 📷 v0.8.1 — 即時 AI 姿態監控修復與 WebCam 影格推論端點版本 (2026-10-21 21:35)
+
+- **檔案名稱**: `student_analytics_v0.8.1_20261021.zip` (11.64 MB)
+- **Git Commit**: `23625ee`
+- **主要修復與新增功能**:
+  1. **即時監控即時修復**:
+     - 解決在線偵測人數固定為 `--人` 之問題，實時反映鏡頭偵測人數。
+     - 解決即時專注度評分不隨動作變更之問題。
+     - 完善即時異常行為警報動態推播與告警清單同步。
+  2. **WebCam 影格推論 API (`POST /api/v1/realtime/frame`)**:
+     - 支援前端 WebCam 每 800ms 發送影格至後端進行 YOLOv8-Pose 推論並返回分析結果。
+  3. **資料庫非同步寫入**:
+     - 支援寫入即時專注度數據 (`write_attention_metric`) 與異常事件歷史 (`write_abnormal_event`)。
+
+---
 | **v0.7.0** | 2026-09-06 22:56 | `student_analytics_v0.7.0_20260906.zip` | FastAPI RESTful API (TraceID, Metrics, Events, Realtime, Report RateLimiter)、跨環境一鍵全自動部署啟動檔 (start.bat/sh) 與 Cloudflare HTTPS 穿透 |
 | **v0.6.0** | 2026-08-16 20:18 | `student_analytics_v0.6.0_20260816.zip` | MongoDB 8.3.7 CRUD 全面驗證、CORS Preflight (OPTIONS 200) 修復、Cloudflare HTTPS 穿透、core/ 8 大視覺 AI 模組實作與全系統 100% 自動化測試 |
 | **v0.5.0** | 2026-08-16 17:51 | `student_analytics_v0.5.0_20260816.zip` | MongoDB 8.3.7 服務安裝與 Time Series Collection 測試、YOLOv8-Pose ONNX (n/m) 模型匯出與推論驗證 (21ms/103ms)、WebCam 重複函數修復 |

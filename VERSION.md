@@ -1,47 +1,48 @@
 # 學生專注度與異常行為分析系統 (Edge AI Student Analytics System)
 
-## 版本說明 (Release Notes) - v0.8.0
+## 版本說明 (Release Notes) - v0.9.0
 
-- **版本號 (Version)**: `v0.8.0`
-- **打包日期 (Release Date)**: 2026-09-06 23:20 (Asia/Taipei)
-- **精簡版壓縮檔名稱**: `student_analytics_v0.8.0_20260906.zip`
+- **版本號 (Version)**: `v0.9.0`
+- **打包日期 (Release Date)**: 2026-10-22 (Asia/Taipei)
+- **精簡版壓縮檔名稱**: `student_analytics_v0.9.0_20261022.zip`
+- **上一前置版本**: `v0.8.1` (`student_analytics_v0.8.1_20261021.zip`)
 - **線上預覽網址 (Live URL)**: [https://studentanalytics-91cd1.web.app](https://studentanalytics-91cd1.web.app)
 - **專案名稱**: 學生專注度與異常行為分析系統 (Student Analytics System)
 - **環境需求**: Python 3.10+ / MongoDB 7.0+ (已通過 8.3.7 測試) / HTML5 相容瀏覽器 (Chrome / Edge / Firefox)
 
 ---
 
-## 1. 已完成之核心功能與進度摘要 (Completed Progress)
+## 1. 版本歷程與里程碑打包 (Milestone Packages)
 
-### 🌐 全自動 API 對外穿透通道生成與管理 (`scripts/generate_tunnel.py`, `start_tunnel.bat`)
-- [x] **多重通道備援機制**: 整合 Cloudflare Tunnel (`trycloudflare.com`)、Pinggy SSH (`free.pinggy.online`) 與 LocalTunnel 多重備援引擎。
-- [x] **正則表達式精準擷取與狀態同步**: 使用 `re` 解析完整 HTTPS 對外網址，自動寫入 `scratch/tunnel_status.json` 並同步更新 `.env` (`PUBLIC_API_URL`)。
-- [x] **Windows 雙擊一鍵快捷啟動器 (`start_tunnel.bat`)**: 提供雙擊自動檢測/開啟 API 服務並建立對外 HTTPS 穿透網址。
-- [x] **動態狀態查詢 API (`GET /api/v1/system/tunnel`)**: 供儀表板與 Client 實時查詢公網 API 網址與通道健康狀態。
+### 🌟 v0.9.0 (2026-10-22) — 邊緣 AI 視覺核心 (`core/`) 規格全面實作與驗證版本
+- **壓縮檔名稱**: `student_analytics_v0.9.0_20261022.zip`
+- **主要更新**:
+  - `core/models.py`: 建立 `TrackedPerson` 快照、`PoseFlag` (SLEEPING/PHONE_SUSPECTED/DISTRACTED) 與 `FrameResult`。
+  - `core/inference.py`: 純 ONNX Runtime 推論引擎，包含 Letterbox 等比縮放、座標逆向反推還原與向量化 NMS。
+  - `core/tracker.py`: IoU 多人目標追蹤，支援 30 幀遮擋容忍與 ID 漂移防護 (IoU > 0.8 狀態繼承)。
+  - `core/privacy.py`: 頭部區域高斯模糊隱私保護（Kernel ≥ 31×31，嚴格先模糊後標籤）。
+  - `core/head_pose.py`: 三段式頭部朝向估算 (策略1眼鼻、策略2耳肩、策略3純肩，看板閥值過濾)。
+  - `core/roi.py`: 多邊形感興趣區域過濾 (`cv2.pointPolygonTest` 排除座位區外人員)。
+  - `core/camera.py`: 5 FPS 主動讀取丟棄過時緩衝幀（防硬體 Buffer 延遲）與 10 次重試異常處理。
+  - `core/pose_analyzer.py`: 整合姿態異常推導（趴睡、手機手腕 OR 判讀、分心）與 [0, 100] 專注度評分模型。
+  - `tests/test_core.py`: 7 項視覺核心單元測試全數 100% PASS。
 
-### ⚡ FastAPI RESTful API 完整端點實作 (`api/`)
-- [x] **Trace ID 日誌中介軟體 (`TraceIDMiddleware`)**: 為所有進站 HTTP 請求自動產生與攜帶 `X-Trace-ID` 標頭，並連結至全系統結構化日誌。
-- [x] **時序數據與異常事件 API (`/metrics`, `/events`)**: 提供以時間區間查詢 `Attention_Metrics` 時序專注度數據，以及按類型過濾 `Abnormal_Events` 之 RESTful 端點。
-- [x] **AWAIT_QUEUE_FLUSH 資料一致性排空**: `PATCH /sessions/{id}/end` 支援 10 秒超時保護之非同步資料庫寫入佇列排空機制。
-- [x] **即時指標輪詢 API (`GET /api/v1/realtime`)**: 供儀表板每秒輪詢獲取當前課程人數、即時專注度與告警狀態。
-- [x] **PDF 課後報表與 Rate Limiting 保護 (`GET /api/v1/report/{session_id}`)**: 支援自動排版產出 PDF/文本 報告下載，並套用 `API_RATE_LIMIT` (5 次/分鐘) 視窗速率限制攔截。
+### 📌 v0.8.1 (2026-10-21) — 即時 AI 姿態監控修復與 WebCam 影格推論端點版本 (視覺核心實作前之進度)
+- **壓縮檔名稱**: `student_analytics_v0.8.1_20261021.zip`
+- **主要更新**:
+  - 修復實時攝影機與 AI 監控 (Live Stream) 在線人數顯示為 `--人` 之問題。
+  - 修復即時專注度評分隨姿態動作即時動態變更。
+  - 修復異常行為警報即時通知與歷史告警事件紀錄。
+  - 新增 `POST /api/v1/realtime/frame` 端點，支援前端 WebCam 每 800ms 發送影格進行 AI 推論。
+  - 伺服器攝影機串流即時繪製 17 關節點人體骨架與專注度 HUD。
+  - 資料庫新增 `write_attention_metric` 與 `write_abnormal_event` 寫入函式。
 
-### 🚀 跨環境一鍵全自動部署機制 (`start.bat`, `start.sh`, `scripts/deploy_server.py`)
-- [x] **Windows / Linux / macOS 一鍵啟動腳本**: 提供雙擊 [`start.bat`](file:///g:/graduate_project/start.bat) 或執行 `./start.sh` 無痛啟動全套服務。
-- [x] **全自動環境自我修復**: 自動檢測/建立 Python 虛擬環境 (`.venv`)、自動補齊相依套件 (`requirements.txt`)、自動匯出 AI ONNX 模型權重。
-- [x] **Cloudflare Tunnel 動態穿透**: 自動啟動 `npx cloudflared` 並實時抓取列印 TryCloudflare 全球 HTTPS 對外網址。
+---
 
-### 🤖 邊緣 AI 視覺核心模組 (`core/`)
-- [x] **核心 8 大模組完成**:
-  - `core/models.py`: `TrackedPerson` 快照、`PoseFlag` (趴睡/手機) 與 `FrameResult`。
-  - `core/inference.py`: YOLOv8-Pose ONNX Runtime 解碼、letterbox 前處理與 NMS。
-  - `core/tracker.py`: IoU-based PersonTracker 人員追蹤、30 幀遮擋容忍與 ID 漂移防護。
-  - `core/privacy.py`: 頭部區域高斯模糊隱私保護（先模糊後標記）。
-  - `core/head_pose.py`: 三段式頭部朝向估算 (Yaw/Pitch 角度)。
-  - `core/pose_analyzer.py`: 趴睡 (SLEEPING) 與疑似使用手機 (PHONE_SUSPECTED) 姿態規則判讀。
-  - `core/roi.py`: ROI 正規化多邊形與 `cv2.pointPolygonTest` 點過濾。
-  - `core/camera.py`: 5 FPS 鎖定廣角攝影機讀取。
+## 2. 歷史版本紀錄摘要
 
-### 🧪 全系統綜合整合測試
-- [x] **`scripts/test_api_v1.py` 7 大 RESTful API 測試**: 100% PASS。
-- [x] **`scripts/test_all_features.py` 全功能整合測試**: 100% PASS (0 失敗)。
+- **v0.8.0** (2026-09-06): 全自動 API 對外穿透通道生成器 (`scripts/generate_tunnel.py`, `start_tunnel.bat`)、多引擎備援。
+- **v0.7.0** (2026-09-06): FastAPI RESTful API (TraceID/Metrics/Events/Realtime/PDF報表/RateLimiter)、一鍵全自動部署。
+- **v0.6.0** (2026-08-16): MongoDB 8.3.7 整合、CORS Preflight 修復、Cloudflare HTTPS 穿透。
+- **v0.5.0** (2026-08-16): YOLOv8-Pose ONNX (n/m) 模型匯出與推論驗證。
+- **v0.2.1** (2026-08-16): WebCam 直連雙鏡頭切換與隱私遮罩。

@@ -1,16 +1,38 @@
-import os
-import cv2
-import time
-import math
+"""
+core/pose_analyzer.py
+=====================
+High-level Visual AI Pose & Attention Analyzer.
+
+Integrates:
+- InferenceEngine (core.inference): pure ONNX inference
+- PersonTracker (core.tracker): multi-person tracking with 30-frame occlusion tolerance
+- Privacy Filter (core.privacy): Gaussian face/head blur BEFORE drawing overlays
+- Head Pose Estimator (core.head_pose): 3-stage Yaw/Pitch geometry
+- ROI Filter (core.roi): seat polygon filtering
+- Abnormal Pose Deduction: sleeping, phone usage, distraction
+- Attention Scoring: [0, 100] per-student and class-wide average
+"""
+from __future__ import annotations
+
 import logging
+import time
+import uuid
+from typing import Optional, Sequence
+
+import cv2
 import numpy as np
-from datetime import datetime
-from ultralytics import YOLO
+
 import config
+from core.models import FrameResult, PoseFlag, TrackedPerson
+from core.inference import InferenceEngine
+from core.tracker import PersonTracker
+from core.privacy import apply_privacy_blur
+from core.head_pose import estimate_head_pose
+from core.roi import filter_persons_by_roi
 
 logger = logging.getLogger("core.pose_analyzer")
 
-# Keypoint indices according to COCO 17-keypoint standard
+# COCO 17-Keypoint Indices
 NOSE = 0
 LEFT_EYE = 1
 RIGHT_EYE = 2
@@ -31,297 +53,374 @@ RIGHT_ANKLE = 16
 
 # Skeleton connection pairs for drawing
 SKELETON_PAIRS = [
-    (0, 1), (0, 2), (1, 3), (2, 4), # face
-    (5, 6), # shoulders
-    (5, 7), (7, 9), # left arm
-    (6, 8), (8, 10), # right arm
-    (5, 11), (6, 12), # torso
-    (11, 12), # hips
-    (11, 13), (13, 15), # left leg
-    (12, 14), (14, 16)  # right leg
+    (0, 1), (0, 2), (1, 3), (2, 4),      # Face
+    (5, 6),                              # Shoulders
+    (5, 7), (7, 9),                      # Left arm
+    (6, 8), (8, 10),                     # Right arm
+    (5, 11), (6, 12),                    # Torso sides
+    (11, 12),                            # Hips
+    (11, 13), (13, 15),                  # Left leg
+    (12, 14), (14, 16),                  # Right leg
 ]
 
-class PoseAnalyzer:
-    _instance = None
 
-    def __init__(self):
-        # Prefer onnx model if available, fallback to pt
-        onnx_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "yolov8n-pose.onnx")
-        pt_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "yolov8n-pose.pt")
-        
-        if os.path.exists(onnx_path):
-            model_target = onnx_path
-        elif os.path.exists(pt_path):
-            model_target = pt_path
-        else:
-            model_target = "yolov8n-pose.pt"
-            
-        logger.info(f"Loading YOLO-Pose model from: {model_target}")
-        self.model = YOLO(model_target)
-        self.conf_threshold = getattr(config, "POSE_CONF_THRESHOLD", 0.35)
-        self.sleeping_ratio = getattr(config, "SLEEPING_RATIO", 0.20)
-        self.phone_pitch_threshold = getattr(config, "PHONE_PITCH_THRESHOLD", -25.0)
-        
-        # Track persistent FSM / alert state per student
-        self.student_states = {}
+class PoseAnalyzer:
+    """
+    High-level analyzer coordinating the complete Edge AI visual analysis pipeline.
+    """
+
+    _instance: Optional["PoseAnalyzer"] = None
+
+    def __init__(self) -> None:
+        logger.info("Initializing PoseAnalyzer...")
+        self.engine = InferenceEngine.get_instance()
+        self.tracker = PersonTracker()
+
+        # Thresholds from config
+        self.conf_threshold: float = float(getattr(config, "POSE_CONF_THRESHOLD", 0.35))
+        self.sleeping_ratio: float = float(getattr(config, "SLEEPING_RATIO", 0.20))
+        self.phone_pitch_thresh: float = float(getattr(config, "PHONE_PITCH_THRESHOLD", -25.0))
+        self.board_yaw_thresh: float = float(getattr(config, "BOARD_YAW_THRESHOLD", 30.0))
+        self.board_pitch_thresh: float = float(getattr(config, "BOARD_PITCH_THRESHOLD", 25.0))
 
     @classmethod
-    def get_instance(cls):
+    def get_instance(cls) -> "PoseAnalyzer":
         if cls._instance is None:
             cls._instance = PoseAnalyzer()
         return cls._instance
 
-    def _estimate_head_pose(self, keypoints, bbox):
+    def _detect_abnormal_pose(
+        self,
+        kpts: np.ndarray,
+        bbox_xyxy: np.ndarray,
+        head_yaw: float,
+        head_pitch: float,
+    ) -> set[PoseFlag]:
         """
-        Estimate Yaw and Pitch angles based on face/shoulder keypoints.
-        Returns: (yaw, pitch, strategy, is_looking_at_board)
+        Deduce abnormal posture states according to the official spec:
+        - 5.1 Sleeping Detection
+        - 5.2 Phone Usage Detection
+        - Distraction (looking away from blackboard)
         """
-        # Strategy 1: Nose, Left Eye, Right Eye
-        nose = keypoints[NOSE]
-        leye = keypoints[LEFT_EYE]
-        reye = keypoints[RIGHT_EYE]
+        flags: set[PoseFlag] = set()
+        bx1, by1, bx2, by2 = bbox_xyxy
+        bbox_h = max(20.0, float(by2 - by1))
 
-        if nose[2] >= self.conf_threshold and leye[2] >= self.conf_threshold and reye[2] >= self.conf_threshold:
-            eye_mid_x = (leye[0] + reye[0]) / 2.0
-            eye_mid_y = (leye[1] + reye[1]) / 2.0
-            eye_dist = max(10.0, math.hypot(reye[0] - leye[0], reye[1] - leye[1]))
-            
-            # Yaw: horizontal displacement of nose relative to eye midpoint
-            yaw = ((nose[0] - eye_mid_x) / eye_dist) * 60.0
-            # Pitch: vertical displacement (negative = looking down, positive = looking up)
-            # In image coords, y increases downwards, so nose_y > eye_mid_y is normal
-            # If nose drops significantly lower than normal eye-nose distance => looking down
-            pitch = ((eye_mid_y - nose[1]) / eye_dist) * 60.0 + 20.0
-            
-            is_looking = abs(yaw) <= 32.0 and abs(pitch) <= 30.0
-            return float(yaw), float(pitch), 1, is_looking
+        nose = kpts[NOSE]
+        lsh = kpts[LEFT_SHOULDER]
+        rsh = kpts[RIGHT_SHOULDER]
+        lwrist = kpts[LEFT_WRIST]
+        rwrist = kpts[RIGHT_WRIST]
+        lhip = kpts[LEFT_HIP]
+        rhip = kpts[RIGHT_HIP]
 
-        # Strategy 2: Ears + Shoulders
-        lear = keypoints[LEFT_EAR]
-        rear = keypoints[RIGHT_EAR]
-        lsh = keypoints[LEFT_SHOULDER]
-        rsh = keypoints[RIGHT_SHOULDER]
-
-        if lear[2] >= self.conf_threshold and rear[2] >= self.conf_threshold:
-            ear_mid_x = (lear[0] + rear[0]) / 2.0
-            sh_mid_x = (lsh[0] + rsh[0]) / 2.0 if (lsh[2] >= self.conf_threshold and rsh[2] >= self.conf_threshold) else ear_mid_x
-            sh_dist = max(20.0, math.hypot(rear[0] - lear[0], rear[1] - lear[1]))
-            yaw = ((ear_mid_x - sh_mid_x) / sh_dist) * 45.0
-            pitch = 0.0
-            is_looking = abs(yaw) <= 30.0
-            return float(yaw), float(pitch), 2, is_looking
-
-        # Strategy 3: Shoulders only
-        if lsh[2] >= self.conf_threshold and rsh[2] >= self.conf_threshold:
-            dx = rsh[0] - lsh[0]
-            dy = rsh[1] - lsh[1]
-            yaw = math.degrees(math.atan2(dy, dx))
-            pitch = 0.0
-            is_looking = abs(yaw) <= 25.0
-            return float(yaw), float(pitch), 3, is_looking
-
-        return 0.0, 0.0, 0, True
-
-    def _detect_abnormal_pose(self, keypoints, bbox, yaw, pitch):
-        """
-        Evaluate if person is sleeping or suspected of using a phone.
-        Returns: (is_sleeping, is_phone_suspected, is_distracted, flag_str)
-        """
-        x1, y1, x2, y2 = bbox
-        bbox_height = max(20.0, y2 - y1)
-        
-        nose = keypoints[NOSE]
-        lsh = keypoints[LEFT_SHOULDER]
-        rsh = keypoints[RIGHT_SHOULDER]
-        lwrist = keypoints[LEFT_WRIST]
-        rwrist = keypoints[RIGHT_WRIST]
-        lhip = keypoints[LEFT_HIP]
-        rhip = keypoints[RIGHT_HIP]
-        
+        # ── 1. Sleeping Detection ──────────────────────────────────────────────
+        # Conditions:
+        # A) abs(avg_shoulder_y - nose_y) < SLEEPING_RATIO * bbox_height
+        # B) Extreme head pitch tilt (head bowed onto desk or pitch > 60)
+        # C) Severe shoulder sideways tilt (> 0.30 * bbox_height)
         is_sleeping = False
-        is_phone_suspected = False
-        is_distracted = False
-        
-        # 1. Sleeping detection
         if lsh[2] >= self.conf_threshold and rsh[2] >= self.conf_threshold:
             avg_shoulder_y = (lsh[1] + rsh[1]) / 2.0
-            # Condition A: Nose very close to shoulders (head dropped to desk)
             if nose[2] >= self.conf_threshold:
-                if abs(avg_shoulder_y - nose[1]) < self.sleeping_ratio * bbox_height:
+                if abs(avg_shoulder_y - nose[1]) < self.sleeping_ratio * bbox_h:
                     is_sleeping = True
-            # Condition B: Extreme downward head tilt
-            if pitch < -45.0 or pitch > 65.0:
-                is_sleeping = True
-            # Condition C: Heavily tilted shoulders (lying sideways)
-            if abs(lsh[1] - rsh[1]) > 0.30 * bbox_height:
+
+            if head_pitch < -45.0 or head_pitch > 60.0:
                 is_sleeping = True
 
-        # 2. Phone usage detection
-        # Hand/wrist low while head pitch is distinctly downwards
-        has_wrist = False
+            if abs(lsh[1] - rsh[1]) > 0.30 * bbox_h:
+                is_sleeping = True
+
+        if is_sleeping:
+            flags.add(PoseFlag.SLEEPING)
+
+        # ── 2. Phone Usage Detection ───────────────────────────────────────────
+        # Spec 5.2:
+        # 1. Wrist valid (conf > 0.45) AND low (> (avg_shoulder.y + avg_hip.y) / 2)
+        #    Note: Spec explicitly states OR condition between left & right wrists
+        # 2. Head bowed downward (pitch < -35 or pitch < phone_pitch_thresh)
+        is_phone_suspected = False
+        avg_sh_y = (lsh[1] + rsh[1]) / 2.0 if (lsh[2] >= self.conf_threshold and rsh[2] >= self.conf_threshold) else (by1 + bbox_h * 0.25)
+        avg_hp_y = (lhip[1] + rhip[1]) / 2.0 if (lhip[2] >= self.conf_threshold and rhip[2] >= self.conf_threshold) else (by1 + bbox_h * 0.75)
+        mid_torso_y = (avg_sh_y + avg_hp_y) / 2.0
+
         wrist_low = False
-        
-        # Calculate mid torso line
-        shoulder_y = (lsh[1] + rsh[1]) / 2.0 if (lsh[2] >= self.conf_threshold and rsh[2] >= self.conf_threshold) else (y1 + bbox_height * 0.25)
-        hip_y = (lhip[1] + rhip[1]) / 2.0 if (lhip[2] >= self.conf_threshold and rhip[2] >= self.conf_threshold) else (y1 + bbox_height * 0.75)
-        mid_torso_y = (shoulder_y + hip_y) / 2.0
-        
-        if lwrist[2] >= self.conf_threshold and lwrist[1] > mid_torso_y:
-            has_wrist = True
+        if lwrist[2] >= 0.40 and lwrist[1] > mid_torso_y:
             wrist_low = True
-        elif rwrist[2] >= self.conf_threshold and rwrist[1] > mid_torso_y:
-            has_wrist = True
+        elif rwrist[2] >= 0.40 and rwrist[1] > mid_torso_y:
             wrist_low = True
 
-        # Pitch downwards or head bowed
-        if wrist_low and (pitch < -20.0 or (nose[2] >= self.conf_threshold and nose[1] > shoulder_y - 15)):
+        if wrist_low and (head_pitch < self.phone_pitch_thresh or (nose[2] >= self.conf_threshold and nose[1] > avg_sh_y - 12)):
             if not is_sleeping:
                 is_phone_suspected = True
+                flags.add(PoseFlag.PHONE_SUSPECTED)
 
-        # 3. Distracted detection (Looking away from board)
-        if not is_sleeping and not is_phone_suspected and abs(yaw) > 35.0:
-            is_distracted = True
+        # ── 3. Distracted Detection (Looking away) ────────────────────────────
+        if not is_sleeping and not is_phone_suspected:
+            if abs(head_yaw) > self.board_yaw_thresh or abs(head_pitch) > self.board_pitch_thresh:
+                flags.add(PoseFlag.DISTRACTED)
 
-        flag_str = ""
-        if is_sleeping:
-            flag_str = "趴睡 (SLEEPING)"
-        elif is_phone_suspected:
-            flag_str = "疑似使用手機 (PHONE_SUSPECTED)"
-        elif is_distracted:
-            flag_str = "東張西望/分心 (DISTRACTED)"
+        return flags
 
-        return is_sleeping, is_phone_suspected, is_distracted, flag_str
-
-    def _calculate_score(self, is_looking, is_sleeping, is_phone_suspected):
+    def _calculate_score(
+        self,
+        is_looking: bool,
+        flags: set[PoseFlag],
+    ) -> float:
         """
         Scoring formula specified in spec:
         - Looking at board: +50
         - Sitting upright (no sleeping): +50
         - Phone suspected penalty: -50
         - Sleeping penalty: -30
-        Clamped to [0, 100]
+        Clamped to [0, 100].
         """
-        score = 0
-        if is_looking:
-            score += 50
-        if not is_sleeping:
-            score += 50
-            
-        if is_phone_suspected:
-            score -= 50
-        if is_sleeping:
-            score -= 30
+        score = 0.0
+        if is_looking and PoseFlag.DISTRACTED not in flags:
+            score += 50.0
 
-        return max(0, min(100, score))
+        if PoseFlag.SLEEPING not in flags:
+            score += 50.0
 
-    def analyze_frame(self, frame: np.ndarray, draw_overlay: bool = True) -> dict:
+        if PoseFlag.PHONE_SUSPECTED in flags:
+            score -= 50.0
+
+        if PoseFlag.SLEEPING in flags:
+            score -= 30.0
+
+        return float(max(0.0, min(100.0, score)))
+
+    def analyze(
+        self,
+        frame: np.ndarray,
+        roi_polygon: Optional[Sequence[Sequence[float]]] = None,
+        draw_overlay: bool = True,
+    ) -> FrameResult:
         """
-        Run YOLOv8-Pose on frame and compute real-time analytics.
-        Returns:
-            student_count: int
-            attention_score: float (0.0 - 100.0)
-            latest_event: str
-            events: list of str
-            annotated_frame: np.ndarray (if draw_overlay is True)
+        Execute full visual analytics pass on a frame according to specification.
+
+        Parameters
+        ----------
+        frame        : uint8 BGR numpy array
+        roi_polygon  : Optional list of normalized [x, y] coordinates
+        draw_overlay : Whether to produce privacy-blurred annotated frame
+
+        Returns
+        -------
+        FrameResult : Complete analytics snapshot
         """
+        t0 = time.time()
+        frame_id = str(uuid.uuid4())[:8]
+
         if frame is None or frame.size == 0:
-            return {
-                "student_count": 0,
-                "attention_score": 100.0,
-                "latest_event": "等待影像來源",
-                "events": [],
-                "annotated_frame": frame
-            }
+            return FrameResult(
+                frame_id=frame_id,
+                tracked_persons=[],
+                avg_attention_score=100.0,
+                active_flags=set(),
+                latest_event_desc="等待影像來源",
+                inference_ms=0.0,
+                annotated_frame=frame,
+            )
 
-        try:
-            results = self.model(frame, verbose=False)
-            res = results[0]
-        except Exception as e:
-            logger.error(f"Inference failed: {e}")
-            return {
-                "student_count": 0,
-                "attention_score": 100.0,
-                "latest_event": "AI 推論異常",
-                "events": [],
-                "annotated_frame": frame
-            }
+        h, w = frame.shape[:2]
 
-        boxes = res.boxes
-        keypoints_obj = res.keypoints
+        # ── Step 1: Forward inference pass (ONNX) ──────────────────────────────
+        boxes_xyxy, keypoints, scores, _ = self.engine.infer(frame)
+        num_dets = len(boxes_xyxy)
+        t_infer = (time.time() - t0) * 1000.0
 
-        if boxes is None or len(boxes) == 0:
-            return {
-                "student_count": 0,
-                "attention_score": 100.0,
-                "latest_event": "未偵測到學生",
-                "events": [],
-                "annotated_frame": frame
-            }
+        if num_dets == 0:
+            return FrameResult(
+                frame_id=frame_id,
+                tracked_persons=[],
+                avg_attention_score=100.0,
+                active_flags=set(),
+                latest_event_desc="未偵測到學生",
+                inference_ms=t_infer,
+                annotated_frame=frame.copy() if draw_overlay else None,
+            )
 
-        num_persons = len(boxes)
-        kpts_data = keypoints_obj.data.cpu().numpy() if keypoints_obj is not None else []
-        boxes_xyxy = boxes.xyxy.cpu().numpy()
+        # ── Step 2: Multi-person tracking (ByteTrack-like IoU) ─────────────────
+        tracking_ids = self.tracker.update(boxes_xyxy)
 
-        scores = []
-        events = []
-        latest_event = ""
+        # ── Step 3: Analyze each person ────────────────────────────────────────
+        tracked_persons: list[TrackedPerson] = []
+        for i in range(num_dets):
+            tid = tracking_ids[i]
+            bbox_px = boxes_xyxy[i]
+            kpts = keypoints[i]
+            conf = float(scores[i])
 
-        out_frame = frame.copy() if draw_overlay else frame
+            # Normalized bbox (x1, y1, x2, y2) in [0, 1]
+            bbox_norm = (
+                float(bbox_px[0] / w),
+                float(bbox_px[1] / h),
+                float(bbox_px[2] / w),
+                float(bbox_px[3] / h),
+            )
 
-        for i in range(num_persons):
-            student_id = f"S{i+1:03d}"
-            bbox = boxes_xyxy[i]
-            kpts = kpts_data[i] if i < len(kpts_data) else np.zeros((17, 3))
+            # Head pose estimation (Yaw / Pitch)
+            yaw, pitch, _, is_looking = estimate_head_pose(kpts, tracking_id=tid)
 
-            yaw, pitch, strategy, is_looking = self._estimate_head_pose(kpts, bbox)
-            is_sleeping, is_phone, is_distracted, flag_str = self._detect_abnormal_pose(kpts, bbox, yaw, pitch)
-            score = self._calculate_score(is_looking, is_sleeping, is_phone)
-            scores.append(score)
+            # Abnormal pose deduction
+            pose_flags = self._detect_abnormal_pose(kpts, bbox_px, yaw, pitch)
 
-            if flag_str:
-                event_desc = f"{student_id}: {flag_str}"
-                events.append(event_desc)
-                latest_event = event_desc
+            # Attention score
+            score = self._calculate_score(is_looking, pose_flags)
 
-            # Overlay drawing
-            if draw_overlay:
-                x1, y1, x2, y2 = [int(v) for v in bbox]
-                # Box color based on score
-                if score >= 80:
-                    color = (0, 230, 115) # Green
-                elif score >= 50:
-                    color = (0, 204, 255) # Yellow/Cyan
+            person = TrackedPerson(
+                tracking_id=tid,
+                bbox=bbox_norm,
+                keypoints=kpts,
+                confidence=conf,
+                in_roi=True,
+                pose_flags=pose_flags,
+                attention_score=score,
+                head_yaw=yaw,
+                head_pitch=pitch,
+                last_seen_at=time.time(),
+            )
+            tracked_persons.append(person)
+
+        # ── Step 4: ROI Polygon filtering ──────────────────────────────────────
+        valid_persons = filter_persons_by_roi(tracked_persons, roi_polygon)
+
+        # Aggregate class metrics
+        active_flags: set[PoseFlag] = set()
+        latest_event_desc = "姿態標準 (專注聽講)"
+
+        if valid_persons:
+            avg_score = float(np.mean([p.attention_score for p in valid_persons]))
+            for p in valid_persons:
+                active_flags.update(p.pose_flags)
+
+            # Find descriptive event if any
+            for p in valid_persons:
+                if PoseFlag.SLEEPING in p.pose_flags:
+                    latest_event_desc = f"S{p.tracking_id:03d}: 趴睡 (SLEEPING)"
+                    break
+                elif PoseFlag.PHONE_SUSPECTED in p.pose_flags:
+                    latest_event_desc = f"S{p.tracking_id:03d}: 疑似使用手機 (PHONE_SUSPECTED)"
+                    break
+                elif PoseFlag.DISTRACTED in p.pose_flags:
+                    latest_event_desc = f"S{p.tracking_id:03d}: 東張西望 (DISTRACTED)"
+        else:
+            avg_score = 100.0
+            latest_event_desc = "未在座位區偵測到學生"
+
+        # ── Step 5: Privacy Blur & Drawing Overlays ────────────────────────────
+        annotated_frame = None
+        if draw_overlay:
+            # RULE: PII face blurring MUST happen BEFORE drawing labels/skeletons!
+            blurred = apply_privacy_blur(frame, boxes_xyxy, keypoints)
+
+            for i in range(num_dets):
+                person = tracked_persons[i]
+                if not person.in_roi:
+                    # Draw ROI-excluded individuals with faded dashed/grey box
+                    bx1, by1, bx2, by2 = [int(v) for v in boxes_xyxy[i]]
+                    cv2.rectangle(blurred, (bx1, by1), (bx2, by2), (100, 100, 100), 1)
+                    continue
+
+                tid = person.tracking_id
+                score = person.attention_score
+                kpts = person.keypoints
+                bx1, by1, bx2, by2 = [int(v) for v in boxes_xyxy[i]]
+
+                # Color-code by attention score
+                if score >= 80.0:
+                    box_color = (0, 230, 115)     # Vibrant Green
+                elif score >= 50.0:
+                    box_color = (0, 204, 255)     # Yellow / Gold
                 else:
-                    color = (50, 50, 255) # Red
+                    box_color = (60, 60, 255)     # Alert Red
 
-                cv2.rectangle(out_frame, (x1, y1), (x2, y2), color, 2)
-                
-                # Draw skeleton connections
-                for pt1_idx, pt2_idx in SKELETON_PAIRS:
-                    pt1 = kpts[pt1_idx]
-                    pt2 = kpts[pt2_idx]
+                # 1. Draw Bounding Box
+                cv2.rectangle(blurred, (bx1, by1), (bx2, by2), box_color, 2)
+
+                # 2. Draw Skeleton Connections
+                for p1_idx, p2_idx in SKELETON_PAIRS:
+                    pt1 = kpts[p1_idx]
+                    pt2 = kpts[p2_idx]
                     if pt1[2] >= self.conf_threshold and pt2[2] >= self.conf_threshold:
-                        cv2.line(out_frame, (int(pt1[0]), int(pt1[1])), (int(pt2[0]), int(pt2[1])), (0, 255, 255), 2)
+                        cv2.line(
+                            blurred,
+                            (int(pt1[0]), int(pt1[1])),
+                            (int(pt2[0]), int(pt2[1])),
+                            (0, 240, 255),
+                            2,
+                            cv2.LINE_AA,
+                        )
 
-                # Draw keypoints
+                # 3. Draw Keypoints
                 for pt in kpts:
                     if pt[2] >= self.conf_threshold:
-                        cv2.circle(out_frame, (int(pt[0]), int(pt[1])), 3, (0, 165, 255), -1)
+                        cv2.circle(
+                            blurred,
+                            (int(pt[0]), int(pt[1])),
+                            3,
+                            (0, 165, 255),
+                            -1,
+                            cv2.LINE_AA,
+                        )
 
-                # Label tag
-                tag = f"{student_id} | {score}分"
-                if flag_str:
-                    tag += f" [{flag_str.split(' ')[0]}]"
-                cv2.putText(out_frame, tag, (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+                # 4. Draw Label Tag with solid dark background
+                tag_label = f"S{tid:03d} | {int(score)}分"
+                if PoseFlag.SLEEPING in person.pose_flags:
+                    tag_label += " [趴睡]"
+                elif PoseFlag.PHONE_SUSPECTED in person.pose_flags:
+                    tag_label += " [手機]"
+                elif PoseFlag.DISTRACTED in person.pose_flags:
+                    tag_label += " [分心]"
 
-        avg_score = float(np.mean(scores)) if scores else 100.0
-        if not latest_event:
-            latest_event = "姿態標準 (專注聽講)"
+                label_y = max(24, by1 - 6)
+                (tw, th), _ = cv2.getTextSize(tag_label, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 2)
+                cv2.rectangle(blurred, (bx1, label_y - th - 4), (bx1 + tw + 8, label_y + 4), (20, 24, 33), -1)
+                cv2.putText(
+                    blurred,
+                    tag_label,
+                    (bx1 + 4, label_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.52,
+                    box_color,
+                    2,
+                    cv2.LINE_AA,
+                )
+
+            annotated_frame = blurred
+
+        return FrameResult(
+            frame_id=frame_id,
+            tracked_persons=valid_persons,
+            avg_attention_score=round(avg_score, 1),
+            active_flags=active_flags,
+            latest_event_desc=latest_event_desc,
+            inference_ms=round(t_infer, 1),
+            annotated_frame=annotated_frame,
+            timestamp=time.time(),
+        )
+
+    def analyze_frame(
+        self,
+        frame: np.ndarray,
+        roi_polygon: Optional[Sequence[Sequence[float]]] = None,
+        draw_overlay: bool = True,
+    ) -> dict:
+        """
+        Backwards-compatible dictionary wrapper around analyze().
+        Directly satisfies API callers (stream.py, realtime.py).
+        """
+        res = self.analyze(frame, roi_polygon=roi_polygon, draw_overlay=draw_overlay)
 
         return {
-            "student_count": num_persons,
-            "attention_score": round(avg_score, 1),
-            "latest_event": latest_event,
-            "events": events,
-            "annotated_frame": out_frame
+            "student_count": res.student_count,
+            "attention_score": res.avg_attention_score,
+            "latest_event": res.latest_event_desc,
+            "events": res.events,
+            "annotated_frame": res.annotated_frame,
+            "inference_ms": res.inference_ms,
+            "tracked_persons": res.tracked_persons,
+            "frame_result": res,
         }

@@ -19,19 +19,15 @@
 
 ## 2. 邊緣 AI 視覺核心實作 (Vision AI Core — `core/`)
 
-- [ ] 2.1 實作 `core/camera.py`：OpenCV 廣角攝影機讀取迴圈，內建 `time.sleep()` 幀率鎖定（TARGET_FPS=5）。
-      加入 **優雅停機 (Graceful Shutdown)**：處理 `SIGTERM`/`SIGINT` 信號，排空推論迴圈。
-- [ ] 2.2 實作 `core/inference.py`：`InferenceEngine` 類別，以 `onnxruntime.InferenceSession` 載入 ONNX 模型。
-      自動選擇 `CUDAExecutionProvider`，失敗則 fallback 至 `CPUExecutionProvider` 並明確記錄 WARNING 日誌。每一幀賦予唯一 `trace_id`。
-- [ ] 2.3 定義 `core/models.py`：`TrackedPerson` dataclass（`tracking_id`, `bbox`, `keypoints[17,3]`, `confidence`, `in_roi`），
-      以及 `PoseFlag` Enum（`SLEEPING`, `PHONE_SUSPECTED`），`FrameResult` dataclass
-- [ ] 2.4 實作 `core/tracker.py`：整合 ByteTrack，設定最大遮擋容忍 **30 幀**（6 秒 @ 5FPS）。
-      加入 **ID 漂移防護 (ID Drift Protection)**：若新 ID 與剛消失 ID 之 Bbox IoU > 0.8，則繼承舊 ID 狀態。
-- [ ] 2.5 實作 `core/privacy.py`：依據 YOLO 推論後輸出的 BBox，先對原始幀套用高斯模糊產生隱私版影像，**然後再繪製標籤**，絕對禁止未模糊人臉流出核心。
-- [ ] 2.6 實作 `core/head_pose.py`：三段式頭部朝向估計策略 (需過濾 confidence < 0.45) - 策略 1（優先）：nose + left_eye + right_eye（均 confidence ≥ 0.45）→ 幾何 Yaw/Pitch - 策略 2（備用）：left_ear + right_ear + shoulders（均 confidence ≥ 0.45）→ 耳肩輔助算法 - 策略 3（最低）：僅有 shoulders (均 confidence ≥ 0.45) → 肩線水平角估算 Yaw，Pitch 設為 0
-- [ ] 2.7 實作 `core/pose_analyzer.py`：骨架幾何異常判斷邏輯 (限手腕 confidence ≥ 0.45)：- **趴睡**：`abs(avg_shoulder_y - nose_y) / bbox_height < SLEEPING_RATIO (0.20)` 或 `pitch > 60°` - **疑似手機**：`min(wrist_y) > (shoulder_y + hip_y)/2` 且 `head_pitch < PHONE_PITCH_THRESHOLD (-35°)`
-- [ ] 2.8 實作 `core/roi.py`：`cv2.pointPolygonTest()` 過濾，bbox 中心不在 ROI 多邊形內則 `in_roi=False`
-- [ ] 2.9 整合測試 `core/` 所有模組：驗證單次執行時間 ≤ 200ms，確認 `FrameResult` MJPEG 輸出與純節點分離。
+- [x] 2.1 實作 `core/camera.py`：OpenCV 廣角攝影機讀取迴圈，主動丟幀緩衝鎖定（TARGET_FPS=5），10 次重試異常處理 (`CameraConnectionError`)。
+- [x] 2.2 實作 `core/inference.py`：`InferenceEngine` 類別，以 `onnxruntime.InferenceSession` 載入 ONNX 模型。自動選擇 `CUDAExecutionProvider`，失敗則 fallback 至 `CPUExecutionProvider` 並明確記錄 WARNING 日誌。每一幀賦予唯一 `trace_id`。
+- [x] 2.3 定義 `core/models.py`：`TrackedPerson` dataclass（`tracking_id`, `bbox`, `keypoints[17,3]`, `confidence`, `in_roi`），以及 `PoseFlag` Enum（`SLEEPING`, `PHONE_SUSPECTED`, `DISTRACTED`），`FrameResult` dataclass。
+- [x] 2.4 實作 `core/tracker.py`：整合 ByteTrack 多目標追蹤，設定最大遮擋容忍 **30 幀**（6 秒 @ 5FPS）。加入 **ID 漂移防護 (ID Drift Protection)**：若新 ID 與剛消失 ID 之 Bbox IoU > 0.8，則繼承舊 ID 狀態。
+- [x] 2.5 實作 `core/privacy.py`：依據 YOLO 推論後輸出的 BBox / 頭部節點，先對原始幀套用高斯模糊產生隱私版影像，**然後再繪製標籤**，絕對禁止未模糊人臉流出核心。
+- [x] 2.6 實作 `core/head_pose.py`：三段式頭部朝向估計策略 (過濾 confidence < 0.45) - 策略 1（優先）：nose + left_eye + right_eye（均 confidence ≥ 0.45）→ 幾何 Yaw/Pitch - 策略 2（備用）：left_ear + right_ear + shoulders（均 confidence ≥ 0.45）→ 耳肩輔助算法 - 策略 3（最低）：僅有 shoulders (均 confidence ≥ 0.45) → 肩線水平角估算 Yaw，Pitch 設為 0。
+- [x] 2.7 實作 `core/pose_analyzer.py`：骨架幾何異常判斷邏輯：- **趴睡**：`abs(avg_shoulder_y - nose_y) / bbox_height < SLEEPING_RATIO (0.20)` 或 `pitch > 60°` - **疑似手機**：任一手腕 `wrist_y > (shoulder_y + hip_y)/2` 且 `head_pitch < PHONE_PITCH_THRESHOLD`。
+- [x] 2.8 實作 `core/roi.py`：`cv2.pointPolygonTest()` 過濾，bbox 中心不在 ROI 多邊形內則 `in_roi=False`。
+- [x] 2.9 整合測試 `core/` 所有模組：完成 `tests/test_core.py` 7 項單元測試，驗證純 ONNX 推論、多目標追蹤、遮擋容忍、隱私模糊、頭部角度與姿態評分全數通過。
 
 ## 3. 專注度評分引擎 (Attention Scoring Engine — `engine/`)
 

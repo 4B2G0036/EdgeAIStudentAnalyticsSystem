@@ -17,7 +17,7 @@ from datetime import datetime
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 
-VERSION = "v0.8.0"
+VERSION = "v0.9.0"
 DATE_STR = datetime.now().strftime("%Y%m%d")
 ZIP_NAME = f"student_analytics_{VERSION}_{DATE_STR}.zip"
 RELEASES_DIR = os.path.join(ROOT_DIR, "releases")
@@ -26,7 +26,7 @@ OUTPUT_ZIP_PATH = os.path.join(RELEASES_DIR, ZIP_NAME)
 os.makedirs(RELEASES_DIR, exist_ok=True)
 
 # Include directories & files
-INCLUDE_DIRS = ["api", "core", "database", "dashboard", "models", "scripts", "openspec"]
+INCLUDE_DIRS = ["api", "core", "database", "dashboard", "models", "scripts", "openspec", "tests"]
 INCLUDE_FILES = [
     "config.py",
     "init_db.py",
