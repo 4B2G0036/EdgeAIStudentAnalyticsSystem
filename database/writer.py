@@ -108,3 +108,4 @@ def get_metric_writer() -> MetricBatchWriter:
 def flush_attention_metrics() -> int:
     """Helper function to drain all queued metrics and write to MongoDB."""
     return get_metric_writer().flush()
+

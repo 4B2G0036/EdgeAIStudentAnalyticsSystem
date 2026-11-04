@@ -22,7 +22,10 @@ import json
 if sys.stdout.encoding != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-zip_path = "releases/student_analytics_v0.6.0_20260816.zip"
+releases_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "releases")
+zips = [os.path.join(releases_dir, f) for f in os.listdir(releases_dir) if f.endswith(".zip")] if os.path.isdir(releases_dir) else []
+zips.sort(key=os.path.getmtime, reverse=True)
+zip_path = zips[0] if zips else "releases/student_analytics_v0.9.1_20261104.zip"
 sandbox_dir = os.path.abspath("scratch/sandbox_live_deploy")
 
 print("=" * 75)
