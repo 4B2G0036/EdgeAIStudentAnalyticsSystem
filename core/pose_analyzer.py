@@ -15,6 +15,7 @@ Integrates:
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 import uuid
@@ -80,10 +81,16 @@ class PoseAnalyzer:
 
         # Thresholds from config
         self.conf_threshold: float = float(getattr(config, "POSE_CONF_THRESHOLD", 0.35))
-        self.sleeping_ratio: float = float(getattr(config, "SLEEPING_RATIO", 0.20))
-        self.phone_pitch_thresh: float = float(getattr(config, "PHONE_PITCH_THRESHOLD", -25.0))
+        self.sleeping_ratio: float = float(getattr(config, "SLEEPING_RATIO", 0.12))
+        self.phone_pitch_thresh: float = float(getattr(config, "PHONE_PITCH_THRESHOLD", -30.0))
         self.board_yaw_thresh: float = float(getattr(config, "BOARD_YAW_THRESHOLD", 30.0))
         self.board_pitch_thresh: float = float(getattr(config, "BOARD_PITCH_THRESHOLD", 25.0))
+
+        # Hand action & gesture thresholds (ceiling camera optimized)
+        self.hand_raise_ratio: float = float(getattr(config, "HAND_RAISE_OFFSET_RATIO", 0.18))
+        self.hand_support_ratio: float = float(getattr(config, "HAND_SUPPORT_DIST_RATIO", 0.38))
+        self.phone_cluster_ratio: float = float(getattr(config, "PHONE_HAND_CLUSTER_RATIO", 0.55))
+        self.phone_midline_ratio: float = float(getattr(config, "PHONE_MIDLINE_RATIO", 0.45))
 
         # Sleeping detection tuning (strict evidence + temporal filtering)
         self.sleeping_pitch_low: float = float(getattr(config, "SLEEPING_PITCH_LOW", -60.0))
@@ -150,16 +157,23 @@ class PoseAnalyzer:
         tracking_id: Optional[int] = None,
     ) -> set[PoseFlag]:
         """
-        Deduce abnormal posture states according to the official spec:
-        - 5.1 Sleeping Detection
-        - 5.2 Phone Usage Detection
-        - Distraction (looking away from blackboard)
+        Deduce abnormal and engagement posture states optimized for ceiling-mounted cameras:
+        - 1. Sleeping Detection (head near desk or face buried in desk)
+        - 2. Hand Raised (positive classroom engagement / questions)
+        - 3. Chin / Head Support (fatigue / boredom)
+        - 4. Phone Usage (hands clustered or deep lap gaze; excludes normal desk writing)
+        - 5. Distraction (looking away from blackboard)
         """
         flags: set[PoseFlag] = set()
         bx1, by1, bx2, by2 = bbox_xyxy
+        bbox_w = max(20.0, float(bx2 - bx1))
         bbox_h = max(20.0, float(by2 - by1))
 
         nose = kpts[NOSE]
+        leye = kpts[LEFT_EYE]
+        reye = kpts[RIGHT_EYE]
+        lear = kpts[LEFT_EAR]
+        rear = kpts[RIGHT_EAR]
         lsh = kpts[LEFT_SHOULDER]
         rsh = kpts[RIGHT_SHOULDER]
         lwrist = kpts[LEFT_WRIST]
@@ -168,13 +182,6 @@ class PoseAnalyzer:
         rhip = kpts[RIGHT_HIP]
 
         # ── 1. Sleeping Detection ──────────────────────────────────────────────
-        # 舊版只要任一條件成立就判趴睡，且單幀即生效，輕微低頭/轉頭/關鍵點抖動就誤判。
-        # 新版採「主要證據 + 輔助證據」並加上時間濾波：
-        #   主要證據 A：鼻子貼近肩線 (|肩線Y - 鼻Y| < SLEEPING_RATIO × bbox 高度)，
-        #               代表頭部確實垂落到肩/桌面高度。
-        #   輔助證據 B：頭部俯仰角極端 (< SLEEPING_PITCH_LOW 或 > SLEEPING_PITCH_HIGH)
-        #   輔助證據 C：肩線嚴重傾斜 (> SLEEPING_SHOULDER_TILT_RATIO × bbox 高度)
-        #   判定：A 成立，或 B 與 C 同時成立；再經 _debounce_sleeping 連續多幀確認。
         raw_sleeping = False
         if lsh[2] >= self.conf_threshold and rsh[2] >= self.conf_threshold:
             avg_shoulder_y = (lsh[1] + rsh[1]) / 2.0
@@ -183,40 +190,109 @@ class PoseAnalyzer:
                 nose[2] >= self.conf_threshold
                 and abs(avg_shoulder_y - nose[1]) < self.sleeping_ratio * bbox_h
             )
+            # 天花板俯視埋頭趴睡輔助特徵：面部朝下埋於桌面/手臂 (五官遮蔽但耳朵/肩線可見)
+            ear_buried = False
+            if nose[2] < self.conf_threshold:
+                valid_ears = [pt for pt in [lear, rear] if pt[2] >= self.conf_threshold]
+                if valid_ears:
+                    ear_y = float(np.mean([pt[1] for pt in valid_ears]))
+                    if abs(ear_y - avg_shoulder_y) < self.sleeping_ratio * bbox_h:
+                        ear_buried = True
+
             extreme_pitch = (
                 head_pitch < self.sleeping_pitch_low or head_pitch > self.sleeping_pitch_high
             )
             severe_shoulder_tilt = abs(lsh[1] - rsh[1]) > self.sleeping_tilt_ratio * bbox_h
 
-            raw_sleeping = head_on_shoulder_line or (extreme_pitch and severe_shoulder_tilt)
+            raw_sleeping = head_on_shoulder_line or ear_buried or (extreme_pitch and severe_shoulder_tilt)
 
         is_sleeping = self._debounce_sleeping(tracking_id, raw_sleeping)
         if is_sleeping:
             flags.add(PoseFlag.SLEEPING)
 
-        # ── 2. Phone Usage Detection ───────────────────────────────────────────
-        # Spec 5.2:
-        # 1. Wrist valid (conf > 0.45) AND low (> (avg_shoulder.y + avg_hip.y) / 2)
-        #    Note: Spec explicitly states OR condition between left & right wrists
-        # 2. Head bowed downward (pitch < -35 or pitch < phone_pitch_thresh)
+        # ── 2. Hand Action: Hand Raised (舉手發問 / 伸展互動) ────────────────────
+        # 舉手：手腕需高於眼睛高度，或高於肩線超過 (hand_raise_ratio × bbox_h)
+        eye_y = (
+            min(leye[1], reye[1])
+            if (leye[2] >= 0.35 and reye[2] >= 0.35)
+            else (nose[1] if nose[2] >= 0.35 else (by1 + bbox_h * 0.20))
+        )
+        sh_top_y = (
+            min(lsh[1], rsh[1])
+            if (lsh[2] >= self.conf_threshold and rsh[2] >= self.conf_threshold)
+            else (by1 + bbox_h * 0.30)
+        )
+        hand_raise_thresh_y = min(eye_y + 10.0, sh_top_y - self.hand_raise_ratio * bbox_h)
+
+        is_hand_raised = False
+        if (lwrist[2] >= 0.35 and lwrist[1] < hand_raise_thresh_y) or \
+           (rwrist[2] >= 0.35 and rwrist[1] < hand_raise_thresh_y):
+            is_hand_raised = True
+            flags.add(PoseFlag.HAND_RAISED)
+
+        # ── 3. Hand Action: Chin / Head Support (托腮撐頭) ───────────────────────
+        is_head_support = False
+        if not is_sleeping and not is_hand_raised:
+            shoulder_w = (
+                math.hypot(rsh[0] - lsh[0], rsh[1] - lsh[1])
+                if (lsh[2] >= self.conf_threshold and rsh[2] >= self.conf_threshold)
+                else (bbox_w * 0.6)
+            )
+            head_anchors = [pt for pt in [nose, lear, rear, leye, reye] if pt[2] >= 0.35]
+            if head_anchors:
+                for wrist in (lwrist, rwrist):
+                    if wrist[2] >= 0.35:
+                        # 手腕需位於肩線附近或上方
+                        max_wrist_y = (
+                            max(lsh[1], rsh[1]) + 0.10 * bbox_h
+                            if (lsh[2] >= self.conf_threshold and rsh[2] >= self.conf_threshold)
+                            else (by1 + bbox_h * 0.40)
+                        )
+                        if wrist[1] < max_wrist_y:
+                            min_dist = min(math.hypot(wrist[0] - a[0], wrist[1] - a[1]) for a in head_anchors)
+                            if min_dist < self.hand_support_ratio * shoulder_w:
+                                is_head_support = True
+                                flags.add(PoseFlag.HEAD_SUPPORT)
+                                break
+
+        # ── 4. Phone Usage Detection (疑似滑手機 - 天花板防誤判) ───────────────────
         is_phone_suspected = False
-        avg_sh_y = (lsh[1] + rsh[1]) / 2.0 if (lsh[2] >= self.conf_threshold and rsh[2] >= self.conf_threshold) else (by1 + bbox_h * 0.25)
-        avg_hp_y = (lhip[1] + rhip[1]) / 2.0 if (lhip[2] >= self.conf_threshold and rhip[2] >= self.conf_threshold) else (by1 + bbox_h * 0.75)
-        mid_torso_y = (avg_sh_y + avg_hp_y) / 2.0
+        if not is_sleeping and not is_hand_raised:
+            avg_sh_y = (lsh[1] + rsh[1]) / 2.0 if (lsh[2] >= self.conf_threshold and rsh[2] >= self.conf_threshold) else (by1 + bbox_h * 0.25)
+            avg_hp_y = (lhip[1] + rhip[1]) / 2.0 if (lhip[2] >= self.conf_threshold and rhip[2] >= self.conf_threshold) else (by1 + bbox_h * 0.75)
+            mid_torso_y = (avg_sh_y + avg_hp_y) / 2.0
+            shoulder_w = (
+                math.hypot(rsh[0] - lsh[0], rsh[1] - lsh[1])
+                if (lsh[2] >= self.conf_threshold and rsh[2] >= self.conf_threshold)
+                else (bbox_w * 0.6)
+            )
 
-        wrist_low = False
-        if lwrist[2] >= 0.40 and lwrist[1] > mid_torso_y:
-            wrist_low = True
-        elif rwrist[2] >= 0.40 and rwrist[1] > mid_torso_y:
-            wrist_low = True
+            both_wrists_visible = (lwrist[2] >= 0.35 and rwrist[2] >= 0.35)
+            wrist_dist = math.hypot(lwrist[0] - rwrist[0], lwrist[1] - rwrist[1]) if both_wrists_visible else 999.0
+            hands_clustered = both_wrists_visible and (wrist_dist < self.phone_cluster_ratio * shoulder_w)
 
-        if wrist_low and (head_pitch < self.phone_pitch_thresh or (nose[2] >= self.conf_threshold and nose[1] > avg_sh_y - 12)):
-            if not is_sleeping:
+            wrist_low = False
+            if lwrist[2] >= 0.35 and lwrist[1] > mid_torso_y:
+                wrist_low = True
+            elif rwrist[2] >= 0.35 and rwrist[1] > mid_torso_y:
+                wrist_low = True
+
+            # 書寫/桌面上雙手展開排除
+            writing_or_desk_spread = both_wrists_visible and (wrist_dist >= self.phone_cluster_ratio * shoulder_w)
+
+            # 模式 A: 雙手在胸前/桌下聚攏持手機操作
+            if hands_clustered and (head_pitch < -18.0 or (nose[2] >= self.conf_threshold and nose[1] > avg_sh_y - 12)):
                 is_phone_suspected = True
+            # 模式 B: 單手放腿上/抽屜滑手機 (手腕低於軀幹且低頭深傾)
+            elif wrist_low and not writing_or_desk_spread:
+                if head_pitch < self.phone_pitch_thresh or (nose[2] >= self.conf_threshold and nose[1] > avg_sh_y - 12):
+                    is_phone_suspected = True
+
+            if is_phone_suspected:
                 flags.add(PoseFlag.PHONE_SUSPECTED)
 
-        # ── 3. Distracted Detection (Looking away) ────────────────────────────
-        if not is_sleeping and not is_phone_suspected:
+        # ── 5. Distracted Detection (Looking away) ────────────────────────────
+        if not is_sleeping and not is_phone_suspected and not is_hand_raised:
             if abs(head_yaw) > self.board_yaw_thresh or abs(head_pitch) > self.board_pitch_thresh:
                 flags.add(PoseFlag.DISTRACTED)
 
@@ -228,11 +304,13 @@ class PoseAnalyzer:
         flags: set[PoseFlag],
     ) -> float:
         """
-        Scoring formula specified in spec:
+        Scoring formula:
         - Looking at board: +50
         - Sitting upright (no sleeping): +50
         - Phone suspected penalty: -50
         - Sleeping penalty: -30
+        - Head support penalty: -15
+        - Hand raised: keeps full 100 (actively engaging)
         Clamped to [0, 100].
         """
         score = 0.0
@@ -247,6 +325,12 @@ class PoseAnalyzer:
 
         if PoseFlag.SLEEPING in flags:
             score -= 30.0
+
+        if PoseFlag.HEAD_SUPPORT in flags:
+            score -= 15.0
+
+        if PoseFlag.HAND_RAISED in flags:
+            score = max(score, 100.0)
 
         return float(max(0.0, min(100.0, score)))
 
@@ -369,6 +453,13 @@ class PoseAnalyzer:
                     break
                 elif PoseFlag.DISTRACTED in p.pose_flags:
                     latest_event_desc = f"S{p.tracking_id:03d}: 東張西望 (DISTRACTED)"
+                    break
+                elif PoseFlag.HEAD_SUPPORT in p.pose_flags:
+                    latest_event_desc = f"S{p.tracking_id:03d}: 托腮撐頭 (HEAD_SUPPORT)"
+                    break
+                elif PoseFlag.HAND_RAISED in p.pose_flags:
+                    latest_event_desc = f"S{p.tracking_id:03d}: 舉手發問 (HAND_RAISED)"
+                    break
         else:
             avg_score = 100.0
             latest_event_desc = "未在座位區偵測到學生"
@@ -393,8 +484,16 @@ class PoseAnalyzer:
                 kpts = person.keypoints
                 bx1, by1, bx2, by2 = [int(v) for v in boxes_xyxy[i]]
 
-                # Color-code by attention score
-                if score >= 80.0:
+                # Color-code by posture and attention score
+                if PoseFlag.SLEEPING in person.pose_flags or PoseFlag.PHONE_SUSPECTED in person.pose_flags:
+                    box_color = (60, 60, 255)     # Alert Red
+                elif PoseFlag.DISTRACTED in person.pose_flags:
+                    box_color = (0, 140, 255)     # Orange
+                elif PoseFlag.HEAD_SUPPORT in person.pose_flags:
+                    box_color = (0, 204, 255)     # Soft Gold / Amber
+                elif PoseFlag.HAND_RAISED in person.pose_flags:
+                    box_color = (255, 220, 0)     # Vibrant Cyan
+                elif score >= 80.0:
                     box_color = (0, 230, 115)     # Vibrant Green
                 elif score >= 50.0:
                     box_color = (0, 204, 255)     # Yellow / Gold
@@ -430,7 +529,29 @@ class PoseAnalyzer:
                             cv2.LINE_AA,
                         )
 
-                # 4. Prepare Label Tag with solid dark background
+                # 4. Hand Action Visual Highlights
+                if PoseFlag.HAND_RAISED in person.pose_flags:
+                    sh_y = min(kpts[LEFT_SHOULDER, 1], kpts[RIGHT_SHOULDER, 1])
+                    for w_idx in (LEFT_WRIST, RIGHT_WRIST):
+                        wpt = kpts[w_idx]
+                        if wpt[2] >= 0.35 and wpt[1] < sh_y:
+                            wx, wy = int(wpt[0]), int(wpt[1])
+                            cv2.circle(blurred, (wx, wy), 12, (255, 220, 0), 2, cv2.LINE_AA)
+                            cv2.circle(blurred, (wx, wy), 4, (255, 255, 255), -1, cv2.LINE_AA)
+                elif PoseFlag.PHONE_SUSPECTED in person.pose_flags:
+                    lw = kpts[LEFT_WRIST]
+                    rw = kpts[RIGHT_WRIST]
+                    if lw[2] >= 0.35 and rw[2] >= 0.35:
+                        cv2.line(blurred, (int(lw[0]), int(lw[1])), (int(rw[0]), int(rw[1])), (60, 60, 255), 2, cv2.LINE_AA)
+                        cv2.circle(blurred, (int(lw[0]), int(lw[1])), 5, (60, 60, 255), -1)
+                        cv2.circle(blurred, (int(rw[0]), int(rw[1])), 5, (60, 60, 255), -1)
+                elif PoseFlag.HEAD_SUPPORT in person.pose_flags:
+                    for w_idx in (LEFT_WRIST, RIGHT_WRIST):
+                        wpt = kpts[w_idx]
+                        if wpt[2] >= 0.35 and wpt[1] < (kpts[LEFT_SHOULDER, 1] + 15):
+                            cv2.circle(blurred, (int(wpt[0]), int(wpt[1])), 9, (0, 204, 255), 2, cv2.LINE_AA)
+
+                # 5. Prepare Label Tag with solid dark background
                 tag_label = f"S{tid:03d} | {int(score)}分"
                 if PoseFlag.SLEEPING in person.pose_flags:
                     tag_label += " [趴睡]"
@@ -438,6 +559,10 @@ class PoseAnalyzer:
                     tag_label += " [手機]"
                 elif PoseFlag.DISTRACTED in person.pose_flags:
                     tag_label += " [分心]"
+                elif PoseFlag.HEAD_SUPPORT in person.pose_flags:
+                    tag_label += " [托腮]"
+                elif PoseFlag.HAND_RAISED in person.pose_flags:
+                    tag_label += " [舉手]"
                 else:
                     tag_label += " [專注]"
 

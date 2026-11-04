@@ -19,10 +19,12 @@ import numpy as np
 
 
 class PoseFlag(Enum):
-    """Detectable abnormal posture states produced by the pose analyzer."""
-    SLEEPING        = auto()   # 趴睡 – head near desk
-    PHONE_SUSPECTED = auto()   # 疑似使用手機 – wrist low + head bowed
+    """Detectable abnormal or engagement posture states produced by the pose analyzer."""
+    SLEEPING        = auto()   # 趴睡 – head near desk / buried
+    PHONE_SUSPECTED = auto()   # 疑似使用手機 – wrists clustered or head deeply bowed
     DISTRACTED      = auto()   # 東張西望 – large yaw deviation
+    HAND_RAISED     = auto()   # 舉手發問 – wrist raised above shoulder level (positive engagement)
+    HEAD_SUPPORT    = auto()   # 托腮撐頭 – wrist near chin/ear (fatigue/boredom indicator)
 
 
 @dataclass
@@ -95,6 +97,8 @@ class FrameResult:
                     PoseFlag.SLEEPING:        "趴睡 (SLEEPING)",
                     PoseFlag.PHONE_SUSPECTED: "疑似使用手機 (PHONE_SUSPECTED)",
                     PoseFlag.DISTRACTED:      "東張西望 (DISTRACTED)",
+                    PoseFlag.HAND_RAISED:     "舉手發問 (HAND_RAISED)",
+                    PoseFlag.HEAD_SUPPORT:    "托腮撐頭 (HEAD_SUPPORT)",
                 }.get(flag, flag.name)
                 out.append(f"ID{p.tracking_id:03d}: {label}")
         return out

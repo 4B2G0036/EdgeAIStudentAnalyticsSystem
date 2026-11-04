@@ -23,7 +23,23 @@ TARGET_FPS = int(os.getenv("TARGET_FPS", "5"))
 IMG_SZ = int(os.getenv("IMG_SZ", "640"))
 
 # Scoring & Thresholds
-POSE_CONF_THRESHOLD = float(os.getenv("POSE_CONF_THRESHOLD", "0.45"))
+POSE_CONF_THRESHOLD = float(os.getenv("POSE_CONF_THRESHOLD", "0.35"))
+
+# Ceiling Mount & Camera Perspective Settings
+CAMERA_CEILING_MODE = os.getenv("CAMERA_CEILING_MODE", "True").lower() in ("true", "1", "yes")
+# 天花板俯角俯仰補償 (度)：天花板向下俯視時，學生向前看黑板投影在畫面上鼻子低於眼睛，需補償 +35°
+CAMERA_PITCH_OFFSET = float(os.getenv("CAMERA_PITCH_OFFSET", "35.0" if CAMERA_CEILING_MODE else "20.0"))
+
+# Hand Action & Gesture Thresholds
+# 舉手判定：手腕高於肩線超過 (HAND_RAISE_OFFSET_RATIO × 人體框高度) 且接近或高於眼部高度
+HAND_RAISE_OFFSET_RATIO = float(os.getenv("HAND_RAISE_OFFSET_RATIO", "0.18"))
+# 托腮/撐頭判定：手腕接近下巴/鼻子/耳朵且手腕在肩線上方的距離閾值 (比例 × 肩寬)
+HAND_SUPPORT_DIST_RATIO = float(os.getenv("HAND_SUPPORT_DIST_RATIO", "0.38"))
+# 雙手滑手機聚攏判定：雙手手腕間距小於 (PHONE_HAND_CLUSTER_RATIO × 肩寬) 且低頭
+PHONE_HAND_CLUSTER_RATIO = float(os.getenv("PHONE_HAND_CLUSTER_RATIO", "0.55"))
+# 單手滑手機距離身體中線比例
+PHONE_MIDLINE_RATIO = float(os.getenv("PHONE_MIDLINE_RATIO", "0.45"))
+
 # 趴睡判定：鼻子與肩線的垂直距離須小於 (SLEEPING_RATIO × 人體框高度) 才算「頭部貼近肩線/桌面」
 SLEEPING_RATIO = float(os.getenv("SLEEPING_RATIO", "0.12"))
 # 趴睡輔助訊號：頭部俯仰角極端門檻 (度)，需搭配肩線傾斜才成立
@@ -34,7 +50,7 @@ SLEEPING_SHOULDER_TILT_RATIO = float(os.getenv("SLEEPING_SHOULDER_TILT_RATIO", "
 # 趴睡時間濾波 (影格數)：連續成立達 CONFIRM 幀才判定趴睡，連續不成立達 RELEASE 幀才解除
 SLEEPING_CONFIRM_FRAMES = int(os.getenv("SLEEPING_CONFIRM_FRAMES", "6"))
 SLEEPING_RELEASE_FRAMES = int(os.getenv("SLEEPING_RELEASE_FRAMES", "3"))
-PHONE_PITCH_THRESHOLD = float(os.getenv("PHONE_PITCH_THRESHOLD", "-35"))
+PHONE_PITCH_THRESHOLD = float(os.getenv("PHONE_PITCH_THRESHOLD", "-30"))
 BOARD_YAW_THRESHOLD = float(os.getenv("BOARD_YAW_THRESHOLD", "30"))
 BOARD_PITCH_THRESHOLD = float(os.getenv("BOARD_PITCH_THRESHOLD", "25"))
 

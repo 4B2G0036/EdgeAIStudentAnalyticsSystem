@@ -32,10 +32,20 @@ RIGHT_EAR    = 4
 LEFT_SHOULDER  = 5
 RIGHT_SHOULDER = 6
 
-# ── Config thresholds (read once at import) ────────────────────────────────────
-_CONF   = float(getattr(config, "POSE_CONF_THRESHOLD",  0.45))
-_YAW_T  = float(getattr(config, "BOARD_YAW_THRESHOLD",  30.0))
-_PITCH_T = float(getattr(config, "BOARD_PITCH_THRESHOLD", 25.0))
+# ── Config thresholds ──────────────────────────────────────────────────────────
+def _get_conf_thresh() -> float:
+    return float(getattr(config, "POSE_CONF_THRESHOLD", 0.35))
+
+def _get_yaw_thresh() -> float:
+    return float(getattr(config, "BOARD_YAW_THRESHOLD", 30.0))
+
+def _get_pitch_thresh() -> float:
+    return float(getattr(config, "BOARD_PITCH_THRESHOLD", 25.0))
+
+def _get_pitch_offset() -> float:
+    ceiling = getattr(config, "CAMERA_CEILING_MODE", True)
+    default_offset = 35.0 if ceiling else 20.0
+    return float(getattr(config, "CAMERA_PITCH_OFFSET", default_offset))
 
 
 def estimate_head_pose(
@@ -44,6 +54,7 @@ def estimate_head_pose(
 ) -> tuple[float, float, int, bool]:
     """
     Estimate Yaw and Pitch angles for a single person.
+    Optimized for ceiling-mounted (overhead / high-angle) classroom cameras.
 
     Parameters
     ----------
@@ -57,9 +68,13 @@ def estimate_head_pose(
     strategy    : int    1/2/3 which calculation strategy was used; 0 = fallback
     is_looking  : bool   True if head is oriented toward the board
     """
+    conf_thresh = _get_conf_thresh()
+    yaw_thresh = _get_yaw_thresh()
+    pitch_thresh = _get_pitch_thresh()
+    pitch_offset = _get_pitch_offset()
 
     def _valid(idx: int) -> bool:
-        return bool(keypoints[idx, 2] >= _CONF)
+        return bool(keypoints[idx, 2] >= conf_thresh)
 
     nose  = keypoints[NOSE]
     leye  = keypoints[LEFT_EYE]
@@ -81,20 +96,18 @@ def estimate_head_pose(
 
         # Pitch: in image coords y↓, so "looking down" means nose_y > eye_mid_y
         # Positive pitch = looking up (nose above eye midpoint in image space)
-        # We add +20° baseline because cameras are typically mounted above students
-        #
-        # 穩定化：轉頭時雙眼投影距離 (eye_dist) 會縮小，直接當分母會讓俯仰角被放大而
-        # 誤判低頭/趴睡。若雙肩可見，改以「肩寬比例」作為尺度下限，避免分母過小。
+        # 天花板俯角補償：攝影機由高處向下拍，學生往前看黑板時鼻孔投影自然低於眼睛，
+        # 加上 pitch_offset (預設天花板模式 +35°，水平鏡頭 +20°) 校正為真實水平視線。
         pitch_scale = eye_dist
         if _valid(LEFT_SHOULDER) and _valid(RIGHT_SHOULDER):
             shoulder_w = math.hypot(rsh[0] - lsh[0], rsh[1] - lsh[1])
             pitch_scale = max(eye_dist, 0.22 * shoulder_w)
-        pitch = ((eye_mid_y - nose[1]) / pitch_scale) * 60.0 + 20.0
+        pitch = ((eye_mid_y - nose[1]) / pitch_scale) * 60.0 + pitch_offset
 
         # 限制合理範圍，避免關鍵點抖動產生極端數值
         yaw = max(-90.0, min(90.0, float(yaw)))
         pitch = max(-90.0, min(90.0, float(pitch)))
-        is_looking = abs(yaw) <= _YAW_T and abs(pitch) <= _PITCH_T
+        is_looking = abs(yaw) <= yaw_thresh and abs(pitch) <= pitch_thresh
         logger.debug("ID=%d  Strategy=1  yaw=%.1f  pitch=%.1f  looking=%s",
                      tracking_id, yaw, pitch, is_looking)
         return yaw, pitch, 1, is_looking
@@ -113,7 +126,7 @@ def estimate_head_pose(
         yaw   = float(((ear_mid_x - sh_mid_x) / ear_dist) * 45.0)
         pitch = 0.0   # cannot infer pitch from ears alone
 
-        is_looking = abs(yaw) <= _YAW_T
+        is_looking = abs(yaw) <= yaw_thresh
         logger.debug("ID=%d  Strategy=2 (ears)  yaw=%.1f  looking=%s",
                      tracking_id, yaw, is_looking)
         return yaw, pitch, 2, is_looking
@@ -126,7 +139,7 @@ def estimate_head_pose(
         yaw   = float(math.degrees(math.atan2(dy, dx)))
         pitch = 0.0
 
-        is_looking = abs(yaw) <= _YAW_T * 0.85   # slightly stricter for shoulder-only
+        is_looking = abs(yaw) <= yaw_thresh * 0.85   # slightly stricter for shoulder-only
         logger.debug("ID=%d  Strategy=3 (shoulders)  yaw=%.1f  looking=%s",
                      tracking_id, yaw, is_looking)
         return yaw, pitch, 3, is_looking

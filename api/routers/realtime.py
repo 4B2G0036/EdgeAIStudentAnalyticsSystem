@@ -39,8 +39,10 @@ def update_live_state(score: float, student_count: int, latest_event: str, event
     current = set(events or [])
     if events:
         _live_state["events"] = list(events)
-        # 僅在事件「新出現」時累計；持續中的同一事件不再每幀 (5 FPS) 重複計數
-        _live_state["total_abnormal_events"] += len(current - _prev_event_set)
+        # 僅在負向異常事件「新出現」時累計 (舉手 HAND_RAISED 為正向課堂互動，不計入異常次數)
+        new_events = current - _prev_event_set
+        new_abnormal = [ev for ev in new_events if not ev.endswith("HAND_RAISED)")]
+        _live_state["total_abnormal_events"] += len(new_abnormal)
     _prev_event_set = current
     _live_state["last_updated"] = time.time()
 

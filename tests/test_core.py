@@ -494,6 +494,100 @@ def test_frame_result_persister_lifecycle():
     assert ("ID001", "趴睡 (SLEEPING)") not in persister._active
 
 
+def test_ceiling_mounted_head_pose_pitch_compensation():
+    """天花板俯角補償：由上方俯視時向前看黑板，鼻子投影低於雙眼，補償後應為正視黑板 (pitch接近0°)。"""
+    kpts = np.zeros((17, 3), dtype=np.float32)
+    # 雙眼水平 (y=200)，鼻子在下方 (y=220)，肩寬 120 (y=280)
+    kpts[0] = [320.0, 220.0, 0.9]   # nose
+    kpts[1] = [300.0, 200.0, 0.9]   # left eye
+    kpts[2] = [340.0, 200.0, 0.9]   # right eye
+    kpts[5] = [260.0, 280.0, 0.9]   # left shoulder
+    kpts[6] = [380.0, 280.0, 0.9]   # right shoulder
+
+    yaw, pitch, strategy, is_looking = estimate_head_pose(kpts, tracking_id=8801)
+    assert strategy == 1
+    assert abs(yaw) < 5.0
+    # 在天花板補償 (+35°) 下，pitch 應落於合理正視區間 (|pitch| <= 25°)
+    assert abs(pitch) <= 25.0
+    assert is_looking is True
+
+
+def test_hand_action_hand_raised():
+    """手部動作優化：學生舉手發問時應精準識別 HAND_RAISED，專注度維持 100 分。"""
+    analyzer = PoseAnalyzer.get_instance()
+    bbox = np.array([200.0, 100.0, 440.0, 500.0], dtype=np.float32)
+    kpts = _make_upper_body_kpts(nose_y=200.0)
+
+    # 1. 右手高舉過肩 (wrist_y = 120 < shoulder_y = 300)
+    kpts[9] = [240.0, 360.0, 0.9]    # left wrist (low)
+    kpts[10] = [390.0, 120.0, 0.9]   # right wrist (raised high)
+
+    flags = analyzer._detect_abnormal_pose(kpts, bbox, 0.0, 0.0, tracking_id=8802)
+    assert PoseFlag.HAND_RAISED in flags
+    assert PoseFlag.PHONE_SUSPECTED not in flags
+
+    # 專注度計分：舉手代表積極參與，為滿分 100
+    score = analyzer._calculate_score(is_looking=True, flags=flags)
+    assert score == 100.0
+
+
+def test_hand_action_chin_support():
+    """手部動作優化：學生單手托腮撐頭時應識別 HEAD_SUPPORT，專注度扣 15 分。"""
+    analyzer = PoseAnalyzer.get_instance()
+    bbox = np.array([200.0, 100.0, 440.0, 500.0], dtype=np.float32)
+    kpts = _make_upper_body_kpts(nose_y=220.0)
+
+    # 右手手腕靠近下巴/鼻子 (wrist_x=335, wrist_y=230, nose=(320, 220))
+    kpts[9] = [240.0, 380.0, 0.9]    # left wrist (desk)
+    kpts[10] = [335.0, 230.0, 0.9]   # right wrist (supporting chin)
+
+    flags = analyzer._detect_abnormal_pose(kpts, bbox, 0.0, 0.0, tracking_id=8803)
+    assert PoseFlag.HEAD_SUPPORT in flags
+    assert PoseFlag.PHONE_SUSPECTED not in flags
+
+    score = analyzer._calculate_score(is_looking=True, flags=flags)
+    assert score == 85.0
+
+
+def test_hand_action_phone_cluster_vs_writing():
+    """手部動作優化：區分雙手聚攏滑手機與雙手展開做筆記。"""
+    analyzer = PoseAnalyzer.get_instance()
+    bbox = np.array([200.0, 100.0, 440.0, 500.0], dtype=np.float32)
+    kpts = _make_upper_body_kpts(nose_y=230.0)
+
+    # A. 雙手聚攏持手機 (雙手手腕間距僅 25px，肩膀寬度 120px，頭部微低)
+    kpts[9] = [310.0, 340.0, 0.9]
+    kpts[10] = [335.0, 340.0, 0.9]
+    flags_phone = analyzer._detect_abnormal_pose(kpts, bbox, 0.0, -22.0, tracking_id=8804)
+    assert PoseFlag.PHONE_SUSPECTED in flags_phone
+
+    # B. 雙手在桌面上自然展開做筆記 (左手腕在 230, 右手腕在 400，間距 170px，正常低頭看書 -20°)
+    kpts[9] = [230.0, 340.0, 0.9]
+    kpts[10] = [400.0, 340.0, 0.9]
+    flags_writing = analyzer._detect_abnormal_pose(kpts, bbox, 0.0, -20.0, tracking_id=8805)
+    assert PoseFlag.PHONE_SUSPECTED not in flags_writing
+
+
+def test_ceiling_buried_face_sleeping():
+    """天花板俯視埋頭趴睡：學生將頭埋於手臂中 (五官被遮蔽 conf<0.35)，耳朵/肩線平齊桌面。"""
+    analyzer = PoseAnalyzer.get_instance()
+    bbox = np.array([200.0, 100.0, 440.0, 500.0], dtype=np.float32)
+    kpts = np.zeros((17, 3), dtype=np.float32)
+    # 五官被手臂遮蔽 (conf=0.1)
+    kpts[0] = [320.0, 300.0, 0.1]
+    kpts[1] = [310.0, 300.0, 0.1]
+    kpts[2] = [330.0, 300.0, 0.1]
+    # 雙耳與雙肩平齊 (y=300, 埋頭趴平)
+    kpts[3] = [270.0, 305.0, 0.9]
+    kpts[4] = [370.0, 305.0, 0.9]
+    kpts[5] = [260.0, 300.0, 0.9]
+    kpts[6] = [380.0, 300.0, 0.9]
+
+    # 直接無 tracking_id 測試單幀判定
+    flags = analyzer._detect_abnormal_pose(kpts, bbox, 0.0, 0.0)
+    assert PoseFlag.SLEEPING in flags
+
+
 if __name__ == "__main__":
     print("Running Edge AI Visual Core tests...")
     test_roi_polygon_filtering()
@@ -532,5 +626,15 @@ if __name__ == "__main__":
     print("  ✓ test_metric_batch_writer_requeue passed")
     test_frame_result_persister_lifecycle()
     print("  ✓ test_frame_result_persister_lifecycle passed")
+    test_ceiling_mounted_head_pose_pitch_compensation()
+    print("  ✓ test_ceiling_mounted_head_pose_pitch_compensation passed")
+    test_hand_action_hand_raised()
+    print("  ✓ test_hand_action_hand_raised passed")
+    test_hand_action_chin_support()
+    print("  ✓ test_hand_action_chin_support passed")
+    test_hand_action_phone_cluster_vs_writing()
+    print("  ✓ test_hand_action_phone_cluster_vs_writing passed")
+    test_ceiling_buried_face_sleeping()
+    print("  ✓ test_ceiling_buried_face_sleeping passed")
     print("\n🎉 ALL TESTS PASSED!")
 
