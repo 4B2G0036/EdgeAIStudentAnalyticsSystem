@@ -1,5 +1,6 @@
 import os
 import sys
+import asyncio
 from datetime import datetime
 import time
 import logging
@@ -20,6 +21,8 @@ from api.routers import sessions, stream, realtime, reports, system
 # Configure project log formats
 config.setup_logging()
 logger = logging.getLogger("api.main")
+
+SERVER_STARTED_AT = None
 
 app = FastAPI(
     title="學生專注度與異常行為分析系統 - API 後端服務",
@@ -48,6 +51,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def private_network_access_middleware(request: Request, call_next):
+    """
+    Chrome Private Network Access：雲端 (https) 儀表板存取 localhost 時，預檢請求 (OPTIONS) 會帶
+    Access-Control-Request-Private-Network，伺服器須回應 Access-Control-Allow-Private-Network: true。
+    此 middleware 位於 CORS 之外層，確保預檢回應一定帶有該標頭。
+    """
+    response = await call_next(request)
+    if request.headers.get("access-control-request-private-network", "").lower() == "true":
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
 
 # Register routers
 app.include_router(sessions.router)
@@ -109,16 +125,26 @@ def self_heal_abnormal_events():
 @app.on_event("startup")
 async def startup_event():
     logger.info("Starting FastAPI server...")
-    try:
-        # Initialize Database connection & create collections/indexes
-        database.initialize_database()
-        
-        # Perform Self-healing force-close on startup
-        self_heal_abnormal_events()
-    except Exception as e:
-        logger.critical(f"FastAPI Startup failed due to DB initialization error: {e}")
-        # Server will crash/exit to prevent starting with broken DB
-        sys.exit(1)
+    global SERVER_STARTED_AT
+    SERVER_STARTED_AT = datetime.utcnow()
+
+    # MongoDB 可能尚在啟動中 (開機自啟 / 服務喚醒)，重試數次再放棄，避免 API 因暫時性連線失敗而離線
+    max_attempts = 6
+    for attempt in range(1, max_attempts + 1):
+        try:
+            # Initialize Database connection & create collections/indexes
+            database.initialize_database()
+
+            # Perform Self-healing force-close on startup
+            self_heal_abnormal_events()
+            return
+        except Exception as e:
+            if attempt >= max_attempts:
+                logger.critical(f"FastAPI Startup failed due to DB initialization error after {max_attempts} attempts: {e}")
+                # Server will crash/exit to prevent starting with broken DB
+                sys.exit(1)
+            logger.warning(f"DB initialization attempt {attempt}/{max_attempts} failed: {e}. Retrying in {attempt * 2}s...")
+            await asyncio.sleep(attempt * 2)
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -156,6 +182,10 @@ def health_check():
 
     return {
         "status": "healthy" if db_status == "connected" else "degraded",
+        "api": "online",
+        "version": app.version,
+        "started_at": SERVER_STARTED_AT.isoformat() if SERVER_STARTED_AT else None,
+        "uptime_seconds": round((datetime.utcnow() - SERVER_STARTED_AT).total_seconds(), 1) if SERVER_STARTED_AT else None,
         "database": {
             "status": db_status,
             "target": config.MONGO_URI,

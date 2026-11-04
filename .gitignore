@@ -64,3 +64,6 @@ releases/
 # Deployment & temporary
 .firebase/
 .agent/
+
+# Generated at startup (latest API URL for dashboard auto-discovery)
+dashboard/api-config.json

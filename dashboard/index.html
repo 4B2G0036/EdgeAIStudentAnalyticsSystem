@@ -680,28 +680,167 @@
 </div>
 
 <script>
-let API = localStorage.getItem('API_BASE') || (
-  (window.location.pathname.startsWith('/dashboard') || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-    ? window.location.origin
-    : 'https://physically-cdna-dat-binary.trycloudflare.com'
+/* ── API 位址自動探索與自動重連 ────────────────────────────
+ * 啟動專案後 Cloudflare Tunnel 網址每次都會改變，因此不再寫死網址，改為：
+ *   1. 同源 (由 FastAPI 提供 /dashboard 時) 直接使用目前網站來源
+ *   2. 手動設定的網址 (⚙️ API 網址，留空即恢復自動偵測)
+ *   3. 讀取 api-config.json (啟動腳本自動發佈的最新穿透網址)
+ *   4. 上次連線成功的網址、本機 localhost:8000
+ * 以 /health 並行探測，挑選優先順序最高且在線者，並每 5 秒心跳；
+ * 連續失敗會自動重新探索並切換網址，無須手動重新整理。
+ */
+localStorage.removeItem('API_BASE'); // 清除舊版快取 (可能是已失效的穿透網址)
+
+const LOCAL_API_CANDIDATES = ['http://localhost:8000', 'http://127.0.0.1:8000'];
+const SAME_ORIGIN_API = (
+  window.location.pathname.startsWith('/dashboard') ||
+  ['localhost', '127.0.0.1'].includes(window.location.hostname) ||
+  window.location.hostname.endsWith('.trycloudflare.com')
 );
-if (API && (API.endsWith('/dashboard') || API.endsWith('/dashboard/'))) {
-  API = API.replace(/\/dashboard\/?$/, '');
+const HEARTBEAT_MS = 5000;
+const PROBE_TIMEOUT_MS = 4000;
+
+function normalizeApiUrl(url) {
+  if (!url || typeof url !== 'string') return '';
+  return url.trim().replace(/\/dashboard\/?$/, '').replace(/\/+$/, '');
 }
 
+let API = SAME_ORIGIN_API
+  ? normalizeApiUrl(window.location.origin)
+  : normalizeApiUrl(localStorage.getItem('API_BASE_MANUAL') || localStorage.getItem('API_BASE_LAST') || '');
+
+const apiState = { online: false, failCount: 0, resolving: false, lastResolveAt: 0, latency: null };
+
 function promptApiUrl() {
-  const current = API;
   const input = prompt(
-    '請輸入 FastAPI 後端服務網址:\n(例如: http://localhost:8000 或 Ngrok / Cloudflare Tunnel 穿透 URL)',
-    current
+    '請輸入 FastAPI 後端服務網址:\n(例如: http://localhost:8000 或 Cloudflare Tunnel 穿透 URL)\n留空並按確定 = 恢復自動偵測',
+    localStorage.getItem('API_BASE_MANUAL') || API
   );
-  if (input !== null && input.trim() !== '') {
-    let newUrl = input.trim().replace(/\/+$/, '');
-    localStorage.setItem('API_BASE', newUrl);
-    API = newUrl;
-    toast(`已更新 API 網址為: ${API}`, 'success');
-    refreshAll();
+  if (input === null) return;
+  const newUrl = normalizeApiUrl(input);
+  if (newUrl) {
+    localStorage.setItem('API_BASE_MANUAL', newUrl);
+    toast(`已設定 API 網址: ${newUrl}`, 'success');
+  } else {
+    localStorage.removeItem('API_BASE_MANUAL');
+    toast('已恢復 API 網址自動偵測', 'success');
   }
+  connectApi('manual');
+}
+
+async function probeApi(base, timeoutMs = PROBE_TIMEOUT_MS) {
+  if (!base) return { ok: false, base };
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const t0 = performance.now();
+  try {
+    const r = await fetch(`${base}/health`, { cache: 'no-store', signal: ctrl.signal });
+    if (!r.ok) return { ok: false, base };
+    const data = await r.json();
+    if (!data || (data.status !== 'healthy' && data.status !== 'degraded')) return { ok: false, base };
+    return { ok: true, base, data, latency: Math.round(performance.now() - t0) };
+  } catch {
+    return { ok: false, base };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function buildApiCandidates() {
+  const list = [];
+  const add = u => { u = normalizeApiUrl(u); if (u && !list.includes(u)) list.push(u); };
+
+  if (SAME_ORIGIN_API) add(window.location.origin);
+  add(localStorage.getItem('API_BASE_MANUAL'));
+  try {
+    const r = await fetch(`api-config.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (r.ok) {
+      const cfg = await r.json();
+      add(cfg.api_base);
+      (cfg.candidates || []).forEach(add);
+    }
+  } catch { /* 未發佈設定檔時略過 */ }
+  add(localStorage.getItem('API_BASE_LAST'));
+  LOCAL_API_CANDIDATES.forEach(add);
+  return list;
+}
+
+function renderApiStatus(state, detail) {
+  const dot  = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  const stat = document.getElementById('stat-api');
+  if (!dot || !text || !stat) return;
+  if (state === 'online') {
+    dot.className = 'status-dot online';
+    text.textContent = `API 已連線${apiState.latency != null ? ` · ${apiState.latency}ms` : ''}`;
+    text.title = API;
+    stat.textContent = '✅ 在線';
+    stat.className = 'stat-value online';
+  } else if (state === 'degraded') {
+    dot.className = 'status-dot online';
+    text.textContent = 'API 已連線 (資料庫異常)';
+    text.title = API;
+    stat.textContent = '⚠️ 資料庫異常';
+    stat.className = 'stat-value';
+  } else if (state === 'connecting') {
+    dot.className = 'status-dot';
+    text.textContent = detail || '連線中…';
+    stat.textContent = '⏳ 連線中';
+    stat.className = 'stat-value';
+  } else {
+    dot.className = 'status-dot offline';
+    text.textContent = 'API 離線 · 自動重連中…';
+    stat.textContent = '❌ 離線';
+    stat.className = 'stat-value';
+  }
+}
+
+function applyApiResult(res) {
+  const changed = normalizeApiUrl(API) !== res.base;
+  const wasOnline = apiState.online;
+  API = res.base;
+  localStorage.setItem('API_BASE_LAST', API);
+  apiState.online = true;
+  apiState.failCount = 0;
+  apiState.latency = res.latency;
+  renderApiStatus(res.data.status === 'healthy' ? 'online' : 'degraded');
+  if (changed && wasOnline) toast(`已自動切換至最新 API: ${API}`, 'success');
+  if (!wasOnline || changed) refreshData();  // 離線→上線或網址更新時自動刷新資料
+}
+
+/** 重新探索所有候選網址並連線至優先順序最高且在線者 */
+async function connectApi(reason) {
+  if (apiState.resolving) return apiState.online;
+  apiState.resolving = true;
+  apiState.lastResolveAt = Date.now();
+  if (!apiState.online) renderApiStatus('connecting', reason === 'startup' ? '連線中…' : '重新連線中…');
+  try {
+    const candidates = await buildApiCandidates();
+    const results = await Promise.all(candidates.map(c => probeApi(c)));
+    const best = results.find(r => r.ok);  // candidates 已依優先順序排列
+    if (best) { applyApiResult(best); return true; }
+    apiState.online = false;
+    renderApiStatus('offline');
+    return false;
+  } finally {
+    apiState.resolving = false;
+  }
+}
+
+/** 心跳：檢查目前 API，連續失敗即自動重新探索 */
+async function checkHealth() {
+  if (apiState.resolving) return apiState.online;
+  if (!API) return connectApi('startup');
+  const res = await probeApi(API);
+  if (res.ok) { applyApiResult(res); return true; }
+
+  apiState.failCount++;
+  if (!apiState.online || apiState.failCount >= 2) return connectApi('failover');
+  return true;  // 單次失敗先容忍，下一輪心跳再確認
+}
+
+function scheduleReconnect() {
+  if (!apiState.resolving && Date.now() - apiState.lastResolveAt > 3000) connectApi('failover');
 }
 let currentActiveSession = null;
 let timerInterval = null;
@@ -906,10 +1045,16 @@ function setLoading(btnId, spinnerId, on) {
 
 /* ── API ────────────────────────── */
 async function apiFetch(path, opts={}) {
-  const r = await fetch(API + path, {
-    headers: { 'Content-Type':'application/json' },
-    ...opts
-  });
+  let r;
+  try {
+    r = await fetch(API + path, {
+      headers: { 'Content-Type':'application/json' },
+      ...opts
+    });
+  } catch (err) {
+    scheduleReconnect();  // 網路層失敗 (API 離線 / 網址已變更) → 自動重新探索
+    throw err;
+  }
   const text = await r.text();
   let data;
   try { data = JSON.parse(text); } catch { data = { message: text }; }
@@ -918,25 +1063,7 @@ async function apiFetch(path, opts={}) {
 }
 
 /* ── HEALTH CHECK ───────────────── */
-async function checkHealth() {
-  const dot  = document.getElementById('status-dot');
-  const text = document.getElementById('status-text');
-  const stat = document.getElementById('stat-api');
-  try {
-    await apiFetch('/');
-    dot.className  = 'status-dot online';
-    text.textContent = 'API 已連線';
-    stat.textContent = '✅ 在線';
-    stat.className = 'stat-value online';
-    return true;
-  } catch {
-    dot.className  = 'status-dot offline';
-    text.textContent = 'API 離線';
-    stat.textContent = '❌ 離線';
-    stat.className = 'stat-value';
-    return false;
-  }
-}
+// checkHealth() / connectApi() 定義於上方「API 位址自動探索與自動重連」區塊
 
 /* ── ACTIVE SESSION ─────────────── */
 async function loadActiveSession() {
@@ -1556,12 +1683,14 @@ async function pollHud() {
 }
 
 /* ── REFRESH ALL ────────────────── */
+async function refreshData() {
+  await loadActiveSession();
+  await loadHistory();
+}
+
 async function refreshAll() {
   const ok = await checkHealth();
-  if (ok) {
-    await loadActiveSession();
-    await loadHistory();
-  }
+  if (ok) await refreshData();
 }
 
 /* ── INIT ───────────────────────── */
@@ -1569,8 +1698,15 @@ document.addEventListener('DOMContentLoaded', () => {
   // Show permission overlay first (webcam video is hidden by default)
   const permOverlay = document.getElementById('webcam-permission-overlay');
   if (permOverlay) permOverlay.style.display = 'flex';
-  refreshAll();
-  setInterval(refreshAll, 30000);
+  // 啟動時自動探索並連線 API (成功後 applyApiResult 會自動載入資料)
+  renderApiStatus('connecting');
+  connectApi('startup');
+  // 每 5 秒心跳，離線自動重連、上線自動刷新資料
+  setInterval(checkHealth, HEARTBEAT_MS);
+  setInterval(() => { if (apiState.online) refreshData(); }, 30000);
+  // 網路恢復 / 分頁重新可見時立即重新確認連線
+  window.addEventListener('online', () => connectApi('failover'));
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkHealth(); });
   // Start HUD polling immediately and every 3 seconds
   pollHud();
   hudPollInterval = setInterval(pollHud, 3000);

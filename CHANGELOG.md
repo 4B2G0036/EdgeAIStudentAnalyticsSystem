@@ -8,7 +8,8 @@
 
 | 版本號 (Version) | 打包日期 (Release Date) | 壓縮檔名稱 | 主要核心更新內容摘要 |
 |---|---|---|---|
-| **v0.9.0** 🌟 *(最新)* | 2026-10-22 10:00 | `student_analytics_v0.9.0_20261022.zip` | 邊緣 AI 視覺核心 (`core/`) 規格全面實作與驗證：純 ONNX 推論、ByteTrack 追蹤 (30幀遮擋/ID防漂移)、高斯隱私模糊 (先模糊後標籤)、三段式頭部朝向、ROI 多邊形過濾、7 項單元測試 100% 通過 |
+| **v0.9.1** 🌟 *(最新)* | 2026-11-04 09:30 | `student_analytics_v0.9.1_20261104.zip` | 修復啟動後 API 離線：儀表板 API 位址自動探索與自動重連 (5 秒心跳)、穿透通道脫離管線穩定啟動與端對端驗證、watchdog 守護自動重啟 API/通道、`api-config.json` 同步 Firebase Hosting、MongoDB 啟動重試、`/health` 擴充與 PNA 預檢標頭 |
+| **v0.9.0** | 2026-10-22 10:00 | `student_analytics_v0.9.0_20261022.zip` | 邊緣 AI 視覺核心 (`core/`) 規格全面實作與驗證：純 ONNX 推論、ByteTrack 追蹤 (30幀遮擋/ID防漂移)、高斯隱私模糊 (先模糊後標籤)、三段式頭部朝向、ROI 多邊形過濾、7 項單元測試 100% 通過 |
 | **v0.8.1** | 2026-10-21 21:35 | `student_analytics_v0.8.1_20261021.zip` | 實時攝影機與 AI 監控 (Live Stream) 除錯：修復在線人數 `--人` 顯示、專注度動態姿態變化反饋、異常警報通知、新增 POST `/api/v1/realtime/frame` WebCam 推論端點 |
 | **v0.8.0** | 2026-09-06 23:20 | `student_analytics_v0.8.0_20260906.zip` | 全自動 API 對外穿透通道生成器 (`scripts/generate_tunnel.py`, `start_tunnel.bat`)、多引擎備援 (Cloudflare/Pinggy)、正則表達式 URL 解析與 `/api/v1/system/tunnel` 查詢端點 |
 
@@ -16,6 +17,24 @@
 
 ## 📝 詳細版本變更內容 (Detailed Release Notes)
 
+### 🔌 v0.9.1 — FastAPI 啟動自動連線與儀表板 API 網址自動更新版本 (2026-11-04)
+
+- **檔案名稱**: `student_analytics_v0.9.1_20261104.zip`
+- **線上體驗網址**: [https://studentanalytics-91cd1.web.app](https://studentanalytics-91cd1.web.app)
+
+#### 🐛 問題根因
+1. 儀表板程式碼寫死過期的 `trycloudflare.com` 網址，且把手動設定快取於 `localStorage('API_BASE')`，每次啟動專案穿透網址都會改變，導致網頁固定顯示「API 離線」。
+2. 穿透通道以 `stdout=PIPE` 啟動且父行程結束後不再讀取，管線中斷使 `cloudflared` 隨啟動腳本結束而死亡。
+3. FastAPI 啟動時 MongoDB 尚未就緒會直接 `sys.exit(1)`；網頁每 30 秒才檢查一次連線，離線後無自動重連。
+
+#### ✨ 修復與新增
+1. **儀表板 API 自動探索與重連 (`dashboard/index.html`)**: 候選網址優先順序為「同源 → 手動 → `api-config.json` → 上次成功 → localhost」，以 `/health` 並行探測；5 秒心跳，連續失敗自動重新探索並切換網址；離線→上線或網址變更時自動刷新資料；網路恢復/分頁回到前景立即重檢；狀態列顯示延遲與「資料庫異常」狀態；`⚙️ API 網址` 留空即恢復自動偵測。
+2. **服務管理模組 (`scripts/service_manager.py`)**: Uvicorn / Cloudflare Tunnel 以日誌檔輸出啟動，穿透網址由日誌擷取並做端對端 `/health` 驗證；既有健康通道自動沿用；發佈 `scratch/tunnel_status.json`、`dashboard/api-config.json` 與 `.env`；可選同步 Firebase Hosting。
+3. **守護監控 (`scripts/watchdog.py`)**: 每 10 秒檢查 API、每 30 秒檢查穿透通道，失效時自動重啟/重建並同步最新網址 (`WATCHDOG_FIREBASE_DEPLOY=0` 可停用雲端同步)。
+4. **後端強化 (`api/main.py`)**: 啟動 DB 初始化 6 次退避重試；`/health` 新增 `api`、`version`、`started_at`、`uptime_seconds`；新增 `Access-Control-Allow-Private-Network` 預檢標頭，讓雲端 (https) 儀表板可連線本機 localhost。
+5. **啟動腳本**: `scripts/deploy_server.py` 與 `scripts/generate_tunnel.py` 串接新模組，支援 `--keep-alive` (前景常駐) 與 `--no-firebase`。
+
+---
 ### 🤖 v0.9.0 — 邊緣 AI 視覺核心 (`core/`) 規格全面實作與驗證版本 (2026-10-22)
 
 - **檔案名稱**: `student_analytics_v0.9.0_20261022.zip` (11.15 MB 精簡版)

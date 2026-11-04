@@ -32,6 +32,8 @@ if sys.stdout.encoding != "utf-8":
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
+sys.path.insert(0, os.path.join(ROOT_DIR, "scripts"))
+import service_manager  # noqa: E402
 
 STATUS_FILE = os.path.join(ROOT_DIR, "scratch", "tunnel_status.json")
 ENV_FILE = os.path.join(ROOT_DIR, ".env")
@@ -200,14 +202,13 @@ def generate_tunnel(port=8000, once=False):
             print("❌ 無法啟動本地 API 服務，穿透程序中斷。")
             return None
 
-    # Step 2: 依序試用穿透引擎
-    proc, tunnel_url = try_cloudflare_tunnel(port=port)
+    # Step 2: 依序試用穿透引擎 (Cloudflare 由 service_manager 以脫離模式啟動並自動發佈網址)
+    proc = None
     engine_name = "Cloudflare Tunnel"
+    tunnel_url = service_manager.ensure_tunnel()
 
     if not tunnel_url:
         print("  ⚠️ Cloudflare 穿透未回應，轉用 Pinggy SSH 備援引擎...")
-        if proc:
-            proc.terminate()
         proc, tunnel_url = try_pinggy_tunnel(port=port)
         engine_name = "Pinggy SSH"
 
@@ -217,8 +218,9 @@ def generate_tunnel(port=8000, once=False):
             proc.terminate()
         return None
 
-    # Step 3: 更新狀態檔與環境變數
-    update_tunnel_status(tunnel_url, engine_name, port=port)
+    # Step 3: 更新狀態檔、dashboard/api-config.json 與環境變數
+    if proc:
+        service_manager.publish_api_url(tunnel_url, engine_name, proc.pid)
 
     print("\n" + "=" * 70)
     print("🎉 【API 對外穿透網址生成成功！】")

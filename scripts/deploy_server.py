@@ -33,6 +33,8 @@ if sys.stdout.encoding != "utf-8":
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
+sys.path.insert(0, os.path.join(ROOT_DIR, "scripts"))
+import service_manager  # noqa: E402
 
 print("=" * 75)
 print("🚀 啟動【學生專注度與異常行為分析系統】跨環境一鍵全自動伺服器部署")
@@ -234,25 +236,10 @@ except Exception:
 
 if not is_api_healthy:
     print("  ℹ️ 正在背景啟動 FastAPI 後端服務 (日誌寫入 scratch/uvicorn_server.log)...")
-    kwargs = {}
-    if sys.platform == "win32":
-        # DETACHED_PROCESS (0x00000008) + CREATE_NEW_PROCESS_GROUP (0x00000200)
-        kwargs["creationflags"] = 0x00000008 | 0x00000200
-
-    log_fp = open(uvicorn_log_file, "a", encoding="utf-8")
-    log_fp.write(f"\n--- Server Starting at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
-    log_fp.flush()
-
-    subprocess.Popen(
-        [python_bin, "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"],
-        cwd=ROOT_DIR,
-        stdout=log_fp,
-        stderr=subprocess.STDOUT,
-        **kwargs
-    )
+    service_manager.start_api()
 
     print("  ⏳ 正在驗證 API 服務與資料庫握手狀態 (Active Health Polling)...")
-    for attempt in range(15):
+    for attempt in range(30):
         time.sleep(1)
         try:
             req = urllib.request.Request("http://localhost:8000/health")
@@ -268,7 +255,7 @@ if not is_api_healthy:
             continue
 
     if not is_api_healthy:
-        print("  🔴 [啟動驗證超時] FastAPI 在 15 秒內未回報健康狀態，最後診斷日誌：")
+        print("  🔴 [啟動驗證超時] FastAPI 在 30 秒內未回報健康狀態，最後診斷日誌：")
         print("  " + "-" * 60)
         try:
             with open(uvicorn_log_file, "r", encoding="utf-8", errors="replace") as lf:
@@ -282,18 +269,30 @@ if not is_api_healthy:
         sys.exit(1)
 
 # Step 7: 啟動 API 對外穿透通道與動態提取網址
-print("\n[7/7] 檢查與建立 API 對外穿透通道...")
+print("\n[7/7] 檢查與建立 API 對外穿透通道、同步儀表板 API 網址並啟動守護監控...")
+previous_tunnel_url = service_manager.read_status().get("tunnel_url")
 try:
-    from scripts.generate_tunnel import generate_tunnel
-    tunnel_url = generate_tunnel(port=8000, once=True)
+    tunnel_url = service_manager.ensure_tunnel()
 except Exception as e:
     print(f"  ⚠️ 穿透通道生成提醒: {e}")
-    tunnel_url = "http://localhost:8000"
+    tunnel_url = None
 
 if not tunnel_url:
     tunnel_url = "http://localhost:8000"
+else:
+    print(f"  🟢 [API 穿透通道就緒] 對外存取網址: {tunnel_url}")
 
-print(f"  🟢 [API 穿透通道就緒] 對外存取網址: {tunnel_url}")
+# 網址變更時，將最新 api-config.json 部署至 Firebase Hosting，讓雲端儀表板自動指向最新 API
+if tunnel_url != previous_tunnel_url and tunnel_url.startswith("https://") \
+        and os.getenv("WATCHDOG_FIREBASE_DEPLOY", "1") != "0" and "--no-firebase" not in sys.argv:
+    print("  ☁️ 偵測到 API 網址更新，正在同步雲端儀表板 (Firebase Hosting)...")
+    if service_manager.deploy_firebase_hosting():
+        print("  🟢 [雲端儀表板已同步] https://studentanalytics-91cd1.web.app 現已指向最新 API")
+
+# 啟動 (或以最新程式碼重啟) 背景守護監控：API / 通道掉線時自動重啟並更新網址
+service_manager.stop_watchdog()
+service_manager.start_watchdog()
+print("  🛡️ [守護監控已啟動] API 與穿透通道離線時將自動重啟並同步網址 (日誌: scratch/watchdog.log)")
 
 
 # Health Check Verification
@@ -307,3 +306,11 @@ print(f"  🩺 資料庫健康診斷端點:   http://localhost:8000/health (連�
 print(f"  🔒 HTTPS 對外穿透網址:   {tunnel_url}")
 print(f"  📚 Swagger API 互動文件: {tunnel_url}/docs")
 print("=" * 75)
+
+if "--keep-alive" in sys.argv or "--daemon" in sys.argv:
+    print("\n💡 [守護進程模式] 服務與穿透通道持續運行中 (按 Ctrl+C 可停止)...")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n🛑 正在停止服務...")

@@ -17,7 +17,7 @@ from datetime import datetime
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 
-VERSION = "v0.9.0"
+VERSION = "v0.9.1"
 DATE_STR = datetime.now().strftime("%Y%m%d")
 ZIP_NAME = f"student_analytics_{VERSION}_{DATE_STR}.zip"
 RELEASES_DIR = os.path.join(ROOT_DIR, "releases")
@@ -51,7 +51,8 @@ EXCLUDE_SUBSTRINGS = [
     "releases",
     "scratch",
     ".idea",
-    ".vscode"
+    ".vscode",
+    "api-config.json"
 ]
 
 print("=" * 70)
