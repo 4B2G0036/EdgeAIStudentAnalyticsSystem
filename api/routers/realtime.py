@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 import database
 from core.pose_analyzer import PoseAnalyzer
+from api.persistence import get_persister
 
 logger = logging.getLogger("api.routers.realtime")
 router = APIRouter(prefix="/api/v1", tags=["即時指標與狀態監控"])
@@ -26,15 +27,21 @@ _live_state = {
     "last_updated": 0.0
 }
 
+_prev_event_set: set = set()
+
+
 def update_live_state(score: float, student_count: int, latest_event: str, events: list = None):
-    global _live_state
+    global _live_state, _prev_event_set
     _live_state["attention_score"] = float(score)
     _live_state["active_student_count"] = int(student_count)
     if latest_event:
         _live_state["latest_event"] = str(latest_event)
+    current = set(events or [])
     if events:
         _live_state["events"] = list(events)
-        _live_state["total_abnormal_events"] += len(events)
+        # 僅在事件「新出現」時累計；持續中的同一事件不再每幀 (5 FPS) 重複計數
+        _live_state["total_abnormal_events"] += len(current - _prev_event_set)
+    _prev_event_set = current
     _live_state["last_updated"] = time.time()
 
 def get_current_live_state():
@@ -85,7 +92,8 @@ async def get_current_realtime_payload() -> dict:
             "teacher": active_session.get("teacher"),
             "attention_score": float(current_score),
             "active_student_count": int(current_count),
-            "total_abnormal_events": int(live_metrics.get("total_abnormal_events", 0)) + _live_state["total_abnormal_events"],
+            # 進行中課程以資料庫去重後的事件數為準 (記憶體計數僅用於無課程時顯示，避免重複加總)
+            "total_abnormal_events": int(live_metrics.get("total_abnormal_events", 0)),
             "latest_event": current_event,
             "timestamp": now_iso
         }
@@ -226,18 +234,8 @@ def _process_webcam_frame_sync(body: bytes) -> Tuple[Optional[dict], Optional[st
     # Update in-memory state
     update_live_state(score, count, latest_event, events)
 
-    # If a session is active, write to MongoDB
-    active_session = database.get_active_session()
-    if active_session:
-        sid = active_session["session_id"]
-        if count > 0:
-            database.write_attention_metric(sid, score, count)
-        for ev in events:
-            # ev format: "S001: 疑似使用手機 (PHONE_SUSPECTED)"
-            parts = ev.split(":", 1)
-            student_id = parts[0].strip()
-            event_type = parts[1].strip() if len(parts) > 1 else "abnormal"
-            database.write_abnormal_event(sid, student_id, event_type)
+    # If a session is active, write to MongoDB (shared lifecycle-aware persister)
+    get_persister().persist(score, count, events)
 
     return {
         "status": "ok",

@@ -119,6 +119,8 @@ class PersonTracker:
         N = len(detected_boxes)
 
         if N == 0:
+            # 無偵測時仍需推進遮擋計時，否則空教室期間舊軌跡永遠不會過期
+            self._age_tracks(active_ids=set())
             self._expire_lost_tracks()
             return []
 
@@ -138,15 +140,14 @@ class PersonTracker:
                 mi, di = np.unravel_index(np.argmax(iou_mat), iou_mat.shape)
                 if iou_mat[mi, di] < self._iou_match:
                     break
-                if mi in matched_tracks or di in matched_dets:
-                    iou_mat[mi, di] = 0.0
-                    continue
                 matched_tracks.add(mi)
                 matched_dets.add(di)
                 assigned[di] = active[mi].tracking_id
                 active[mi].bbox = detected_boxes[di].copy()
                 active[mi].last_seen_frame = self._frame_idx
-                iou_mat[mi, di] = 0.0
+                # 該軌跡與該偵測皆已配對，整列整行清零，避免重複佔用後續迴圈次數
+                iou_mat[mi, :] = 0.0
+                iou_mat[:, di] = 0.0
 
         # -- Step 2: ID-Drift Protection for unmatched detections --------------
         #    If a brand-new detection overlaps a *recently-lost* track with
@@ -158,26 +159,32 @@ class PersonTracker:
             new_boxes  = detected_boxes[unmatched_dets]
             iou_mat2   = _iou_matrix(lost_boxes, new_boxes)  # (L, U)
 
-            matched_lost = set()
+            matched_lost: set[int] = set()
             for u_idx, det_idx in enumerate(unmatched_dets):
-                if u_idx >= iou_mat2.shape[1]:
-                    break
-                col   = iou_mat2[:, u_idx]
-                best  = int(np.argmax(col))
-                if col[best] >= self._iou_inherit_thresh and best not in matched_lost:
+                col = iou_mat2[:, u_idx].copy()
+                # 已被其他偵測認領的遺失軌跡不可重複使用
+                if matched_lost:
+                    col[list(matched_lost)] = -1.0
+                best = int(np.argmax(col))
+                if col[best] >= self._iou_inherit:
                     # Revive lost track with inherited ID
                     revived = self._lost_tracks[best]
                     revived.bbox            = detected_boxes[det_idx].copy()
                     revived.last_seen_frame = self._frame_idx
                     revived.is_active       = True
                     self._tracks.append(revived)
-                    self._lost_tracks.pop(best)
                     assigned[det_idx] = revived.tracking_id
                     matched_lost.add(best)
                     logger.debug(
                         "ID-Drift Protection: revived ID=%d with IoU=%.2f",
                         revived.tracking_id, col[best],
                     )
+
+            # 迴圈結束後才統一移除，避免在迴圈中 pop 造成索引錯位
+            if matched_lost:
+                self._lost_tracks = [
+                    t for i, t in enumerate(self._lost_tracks) if i not in matched_lost
+                ]
 
         # -- Step 3: Allocate fresh IDs for still-unmatched detections ---------
         for i in range(N):
@@ -192,7 +199,14 @@ class PersonTracker:
                 self._next_id += 1
 
         # -- Step 4: Mark tracks missing this frame ----------------------------
-        active_ids = set(assigned)
+        self._age_tracks(active_ids=set(assigned))
+
+        self._expire_lost_tracks()
+        return assigned
+
+    # ── Helpers ────────────────────────────────────────────────────────────────
+    def _age_tracks(self, active_ids: set[int]) -> None:
+        """Move tracks that stayed unseen for >= max_occlusion_frames into the lost list."""
         for t in self._tracks:
             if t.tracking_id not in active_ids and t.is_active:
                 frames_gone = self._frame_idx - t.last_seen_frame
@@ -204,11 +218,6 @@ class PersonTracker:
 
         # Remove terminated tracks from active list
         self._tracks = [t for t in self._tracks if t.is_active]
-
-        self._expire_lost_tracks()
-        return assigned
-
-    # ── Helpers ────────────────────────────────────────────────────────────────
     def _expire_lost_tracks(self) -> None:
         """
         Permanently discard lost tracks that have been gone for more than

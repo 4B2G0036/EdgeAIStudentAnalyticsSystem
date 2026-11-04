@@ -15,6 +15,7 @@ import database
 from core.camera import CameraManager
 from core.pose_analyzer import PoseAnalyzer
 from core.drawing import draw_text_bgr
+from api.persistence import get_persister
 from api.routers.realtime import update_live_state
 
 logger = logging.getLogger("api.routers.stream")
@@ -30,16 +31,26 @@ def get_camera_manager():
         _camera_manager = CameraManager(config.CAMERA_ID)
     return _camera_manager
 
+_FALLBACK_BG = None
+
+
+def _get_fallback_background():
+    """Build the dark gradient background once (vectorized) and reuse a copy per frame."""
+    global _FALLBACK_BG
+    if _FALLBACK_BG is None:
+        import numpy as np
+        y = np.arange(480, dtype=np.float32)[:, None]
+        base = np.array([10, 14, 26], dtype=np.float32)
+        step = np.array([0.03, 0.04, 0.05], dtype=np.float32)
+        gradient = (base + y * step).astype(np.uint8)            # (480, 3)
+        _FALLBACK_BG = np.repeat(gradient[:, None, :], 640, axis=1)  # (480, 640, 3)
+    return _FALLBACK_BG.copy()
+
+
 def generate_fallback_frame(text="攝影機串流傳輸中 (等待畫面)..."):
     """Generate a clean dark-themed placeholder frame if hardware camera fails to open."""
-    import numpy as np
-    img = np.zeros((480, 640, 3), dtype=np.uint8)
-    
-    # Dark gradient background
-    for y in range(480):
-        img[y, :] = (int(10 + y * 0.03), int(14 + y * 0.04), int(26 + y * 0.05))
-        
-    # Draw header banner
+    img = _get_fallback_background()
+        # Draw header banner
     cv2.rectangle(img, (0, 0), (640, 45), (15, 22, 41), -1)
     draw_text_bgr(img, "STUDENT ANALYTICS AI STREAM (LIVE 5 FPS)", (15, 12), font_size=15, color_bgr=(99, 179, 237), bold=True)
                 
@@ -166,17 +177,8 @@ class StreamBroadcaster:
                     # Update live in-memory state
                     update_live_state(score, count, latest_event, events)
 
-                    # Persist to DB if session is active
-                    active_session = database.get_active_session()
-                    if active_session:
-                        sid = active_session["session_id"]
-                        if count > 0:
-                            database.write_attention_metric(sid, score, count)
-                        for ev in events:
-                            parts = ev.split(":", 1)
-                            student_id = parts[0].strip()
-                            event_type = parts[1].strip() if len(parts) > 1 else "abnormal"
-                            database.write_abnormal_event(sid, student_id, event_type)
+                    # Persist to DB if session is active (session cached, events lifecycle-aware)
+                    get_persister().persist(score, count, events)
 
                     # Add overlay banner with timestamp and stats
                     height, width = annotated_frame.shape[:2]

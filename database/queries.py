@@ -302,6 +302,28 @@ def write_abnormal_event(session_id, student_id, event_type):
         return False
 
 
+def close_all_active_events(session_id, reason="session_ended"):
+    """Close every still-active abnormal event of a session (e.g. when the class ends)."""
+    db = get_db()
+    now = datetime.utcnow()
+    try:
+        active_events = list(db["Abnormal_Events"].find({"session_id": session_id, "ended_at": None}))
+        for ev in active_events:
+            started = ev.get("started_at", now)
+            db["Abnormal_Events"].update_one(
+                {"_id": ev["_id"]},
+                {"$set": {
+                    "ended_at": now,
+                    "ended_reason": reason,
+                    "duration_seconds": float((now - started).total_seconds()),
+                }},
+            )
+        return len(active_events)
+    except Exception as e:
+        logger.error(f"Failed to close active events for session {session_id}: {e}")
+        return 0
+
+
 def close_abnormal_event(session_id, student_id, event_type=None, reason="normal_restored"):
     """Close active abnormal events for a student when normal posture is restored."""
     db = get_db()

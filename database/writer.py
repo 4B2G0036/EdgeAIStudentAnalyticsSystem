@@ -23,9 +23,10 @@ class MetricBatchWriter:
     Collects high-frequency time-series metrics and flushes them to MongoDB using insert_many,
     reducing network round trips by ~90% and preventing DB I/O saturation.
     """
-    def __init__(self, batch_size: int = 15, flush_interval_s: float = 2.0):
+    def __init__(self, batch_size: int = 15, flush_interval_s: float = 2.0, max_pending: int = 5000):
         self.batch_size = batch_size
         self.flush_interval_s = flush_interval_s
+        self.max_pending = max_pending
         self._queue = queue.Queue()
         self._stop_event = threading.Event()
         self._worker_thread: Optional[threading.Thread] = None
@@ -83,7 +84,19 @@ class MetricBatchWriter:
             return len(batch)
         except Exception as e:
             logger.error(f"Error during metric batch flush ({len(batch)} items): {e}")
+            self._requeue(batch)
             return 0
+
+    def _requeue(self, batch: List[dict]) -> None:
+        """寫入失敗時把整批資料放回佇列等待下次重試 (有上限，避免 DB 長時間故障造成記憶體無限成長)。"""
+        if self._queue.qsize() + len(batch) > self.max_pending:
+            logger.warning(
+                f"Metric queue would exceed {self.max_pending} pending items; "
+                f"dropping {len(batch)} metrics to protect memory."
+            )
+            return
+        for doc in batch:
+            self._queue.put(doc)
 
     def _worker_loop(self):
         last_flush = time.time()

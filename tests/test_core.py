@@ -423,6 +423,77 @@ def test_cjk_unicode_drawing_and_action_labels():
     assert img.max() > 0
 
 
+def test_tracker_drift_revival_and_empty_aging():
+    """Verify PersonTracker ID-drift revival, empty frame aging, and greedy row/col cleanup."""
+    tracker = PersonTracker(max_occlusion_frames=5, iou_match_thresh=0.3, iou_inherit_thresh=0.7)
+    
+    # 1. First frame: person at box A
+    box_a = np.array([[100.0, 100.0, 200.0, 200.0]], dtype=np.float32)
+    ids_1 = tracker.update(box_a)
+    assert ids_1 == [1]
+
+    # 2. Feed empty frames past max_occlusion_frames to age it into lost_tracks
+    empty = np.zeros((0, 4), dtype=np.float32)
+    for _ in range(6):
+        tracker.update(empty)
+    assert len(tracker._tracks) == 0
+    assert len(tracker._lost_tracks) == 1
+    assert tracker._lost_tracks[0].tracking_id == 1
+
+    # 3. Person returns at nearly identical box: should revive with ID 1
+    ids_revived = tracker.update(box_a)
+    assert ids_revived == [1]
+    assert len(tracker._tracks) == 1
+    assert len(tracker._lost_tracks) == 0
+
+
+def test_metric_batch_writer_requeue():
+    """Verify MetricBatchWriter requeues failed batch with memory bounds protection."""
+    from database.writer import MetricBatchWriter
+    writer = MetricBatchWriter(batch_size=5, flush_interval_s=10.0, max_pending=10)
+    
+    # Simulate a failed batch
+    failed_batch = [
+        {"timestamp": 1, "metadata": {"session_id": "s1"}, "attention_score": 90.0, "student_count": 1},
+        {"timestamp": 2, "metadata": {"session_id": "s1"}, "attention_score": 85.0, "student_count": 1},
+    ]
+    writer._requeue(failed_batch)
+    assert writer._queue.qsize() == 2
+
+    # Overflow protection check: filling past max_pending drops new docs to prevent OOM
+    huge_batch = [{"dummy": i} for i in range(15)]
+    writer._requeue(huge_batch)
+    assert writer._queue.qsize() == 2  # Remains capped, huge_batch dropped
+    writer.stop()
+
+
+def test_frame_result_persister_lifecycle():
+    """Verify FrameResultPersister parsing, event tracking, and grace frames closing."""
+    from api.persistence import FrameResultPersister, parse_event
+    
+    student, event_type = parse_event("ID001: 趴睡 (SLEEPING)")
+    assert student == "ID001"
+    assert event_type == "趴睡 (SLEEPING)"
+
+    persister = FrameResultPersister(session_ttl_s=100.0, close_grace_frames=2)
+    # Mock resolved session id
+    persister._session_id = "test-session-mock"
+    persister._session_checked_at = 9999999999.0
+
+    # 1. Event appears
+    persister.persist(80.0, 1, ["ID001: 趴睡 (SLEEPING)"])
+    assert ("ID001", "趴睡 (SLEEPING)") in persister._active
+
+    # 2. Event disappears in next frame (miss count = 1, below grace=2, still active)
+    persister.persist(100.0, 1, [])
+    assert ("ID001", "趴睡 (SLEEPING)") in persister._active
+    assert persister._active[("ID001", "趴睡 (SLEEPING)")]["miss"] == 1
+
+    # 3. Disappears second time (miss count = 2 >= grace=2, closed and purged)
+    persister.persist(100.0, 1, [])
+    assert ("ID001", "趴睡 (SLEEPING)") not in persister._active
+
+
 if __name__ == "__main__":
     print("Running Edge AI Visual Core tests...")
     test_roi_polygon_filtering()
@@ -455,5 +526,11 @@ if __name__ == "__main__":
     print("  ✓ test_sleeping_requires_sustained_head_down_and_releases passed")
     test_head_pose_pitch_stable_when_turning_head()
     print("  ✓ test_head_pose_pitch_stable_when_turning_head passed")
+    test_tracker_drift_revival_and_empty_aging()
+    print("  ✓ test_tracker_drift_revival_and_empty_aging passed")
+    test_metric_batch_writer_requeue()
+    print("  ✓ test_metric_batch_writer_requeue passed")
+    test_frame_result_persister_lifecycle()
+    print("  ✓ test_frame_result_persister_lifecycle passed")
     print("\n🎉 ALL TESTS PASSED!")
 

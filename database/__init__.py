@@ -16,7 +16,8 @@ from database.queries import (
     get_session_events,
     write_attention_metric,
     write_abnormal_event,
-    close_abnormal_event
+    close_abnormal_event,
+    close_all_active_events
 )
 
 

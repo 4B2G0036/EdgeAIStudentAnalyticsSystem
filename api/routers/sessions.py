@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 import database
+from api.persistence import get_persister
 
 logger = logging.getLogger("api.routers.sessions")
 router = APIRouter(prefix="/api/v1/sessions", tags=["課程 Session 管理"])
@@ -80,6 +81,7 @@ async def start_new_session(payload: SessionCreate):
             roi_polygon=payload.roi_polygon,
             notes=payload.notes
         )
+        get_persister().invalidate_session_cache()
         return {"session_id": session_id}
     except Exception as e:
         logger.error(f"Error starting new session: {e}")
@@ -116,6 +118,12 @@ async def end_active_session(session_id: str, background_tasks: BackgroundTasks)
     # 3. Update ended_at in DB
     try:
         updated_session = await asyncio.to_thread(database.end_session, session_id)
+
+        # 3.1 關閉所有仍進行中的異常事件 (補上 ended_at / duration_seconds)，並讓即時寫入器立刻感知課程已結束
+        closed = await asyncio.to_thread(database.close_all_active_events, session_id, "session_ended")
+        if closed:
+            logger.info(f"Closed {closed} active abnormal events for ended session {session_id}.")
+        get_persister().invalidate_session_cache()
         
         # 4. Trigger PDF Report generation asynchronously via BackgroundTasks
         logger.info(f"Triggering background task to generate PDF report for session {session_id}.")
