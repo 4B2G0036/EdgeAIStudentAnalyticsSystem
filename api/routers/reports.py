@@ -119,8 +119,9 @@ async def generate_and_download_report(session_id: str, request: Request):
         }
         return StreamingResponse(pdf_buffer, media_type="application/pdf", headers=headers)
         
-    except ImportError:
-        # Fallback to Text report if reportlab is not installed
+    except Exception as e:
+        logger.warning(f"Report generation fallback triggered (reason: {e})")
+        # Fallback to Text report if reportlab is not installed or PDF rendering encounters font/buffer issues
         report_content = f"""學生專注度與異常行為分析系統 - 課程報告
 ==================================================
 課程識別碼: {session_id}

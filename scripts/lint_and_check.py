@@ -78,7 +78,8 @@ for pf in py_files:
         lines = file.readlines()
 
     for idx, line in enumerate(lines, 1):
-        if "except:" in line.replace(" ", ""):
+        stripped = line.strip()
+        if stripped == "except:" or stripped.startswith("except:"):
             print(f"  ⚠️ 建議改善: {rel_path}:L{idx} 使用了裸 except (建議補上具體 Exception)")
             warnings_found += 1
 

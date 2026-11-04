@@ -204,6 +204,20 @@ def test_frame_result_structure():
     assert "PHONE_SUSPECTED" in result.events[0]
 
 
+def test_inference_engine_execution():
+    """Test InferenceEngine vectorised pipeline loads and produces valid output types."""
+    from core.inference import InferenceEngine
+    engine = InferenceEngine.get_instance()
+    dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+    boxes, kpts, scores, trace_id = engine.infer(dummy)
+    assert isinstance(boxes, np.ndarray)
+    assert isinstance(kpts, np.ndarray)
+    assert isinstance(scores, np.ndarray)
+    assert isinstance(trace_id, str)
+    assert len(boxes.shape) == 2 and boxes.shape[1] == 4
+    assert len(kpts.shape) == 3 and kpts.shape[1:] == (17, 3)
+
+
 if __name__ == "__main__":
     print("Running Edge AI Visual Core tests...")
     test_roi_polygon_filtering()
@@ -220,5 +234,7 @@ if __name__ == "__main__":
     print("  ✓ test_pose_analyzer_scoring passed")
     test_frame_result_structure()
     print("  ✓ test_frame_result_structure passed")
+    test_inference_engine_execution()
+    print("  ✓ test_inference_engine_execution passed")
     print("\n🎉 ALL TESTS PASSED!")
 

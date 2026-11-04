@@ -247,30 +247,16 @@ class InferenceEngine:
         scores        = scores[keep]
         kpts_raw      = kpts_raw[keep]
 
-        # 6. De-letterbox: map back to original image pixel coordinates
-        def _delb_xy(x_lb, y_lb):
-            """Convert single (x, y) point from letterbox space to original."""
-            x_orig = (x_lb - pad_left) / scale
-            y_orig = (y_lb - pad_top)  / scale
-            return (
-                float(np.clip(x_orig, 0, orig_w)),
-                float(np.clip(y_orig, 0, orig_h)),
-            )
-
+        # 6. De-letterbox: vectorised mapping back to original image pixel coordinates
         N = len(keep)
-        boxes_out = np.zeros((N, 4),     dtype=np.float32)
-        kpts_out  = np.zeros((N, 17, 3), dtype=np.float32)
+        boxes_out = np.empty_like(boxes_xyxy_lb, dtype=np.float32)
+        boxes_out[:, [0, 2]] = np.clip((boxes_xyxy_lb[:, [0, 2]] - pad_left) / scale, 0, orig_w)
+        boxes_out[:, [1, 3]] = np.clip((boxes_xyxy_lb[:, [1, 3]] - pad_top) / scale, 0, orig_h)
 
-        for i in range(N):
-            x1, y1 = _delb_xy(boxes_xyxy_lb[i, 0], boxes_xyxy_lb[i, 1])
-            x2, y2 = _delb_xy(boxes_xyxy_lb[i, 2], boxes_xyxy_lb[i, 3])
-            boxes_out[i] = [x1, y1, x2, y2]
-
-            for k in range(NUM_KEYPOINTS):
-                kx_lb = kpts_raw[i, k * COCO_KPT_STRIDE]
-                ky_lb = kpts_raw[i, k * COCO_KPT_STRIDE + 1]
-                kc    = float(kpts_raw[i, k * COCO_KPT_STRIDE + 2])
-                kx, ky = _delb_xy(kx_lb, ky_lb)
-                kpts_out[i, k] = [kx, ky, kc]
+        kpts_reshaped = kpts_raw.reshape(N, NUM_KEYPOINTS, COCO_KPT_STRIDE).astype(np.float32)
+        kpts_out = np.empty_like(kpts_reshaped)
+        kpts_out[:, :, 0] = np.clip((kpts_reshaped[:, :, 0] - pad_left) / scale, 0, orig_w)
+        kpts_out[:, :, 1] = np.clip((kpts_reshaped[:, :, 1] - pad_top) / scale, 0, orig_h)
+        kpts_out[:, :, 2] = kpts_reshaped[:, :, 2]
 
         return boxes_out, kpts_out, scores.astype(np.float32), trace_id

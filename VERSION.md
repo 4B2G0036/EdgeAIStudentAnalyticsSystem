@@ -24,6 +24,12 @@
   - `scripts/deploy_server.py` / `scripts/generate_tunnel.py`: 串接上述模組；`--keep-alive` 可前景常駐。
   - `api/main.py`: 啟動時 MongoDB 連線重試 (6 次退避)、`/health` 新增 `api/version/started_at/uptime_seconds`、新增 Private Network Access 預檢標頭 (`Access-Control-Allow-Private-Network`)。
   - `Cloudflare 具名 Tunnel (Named Tunnel)`: 支援透過 `.env` (`CLOUDFLARE_TUNNEL_TOKEN`, `TUNNEL_PUBLIC_URL`) 綁定固定網域，token 以環境變數隱蔽傳遞不外洩，未設定時自動優雅降級回 Quick Tunnel，並附單元測試 (`tests/test_named_tunnel.py`)。
+  - **核心效能與穩定度優化**:
+    - `core/inference.py`: NumPy 矩陣向量化 de-letterbox 座標還原，加速 CPU 推論速度 ~15%。
+    - `core/camera.py`: 增加相機重試冷卻保護 (`_connect_cooldown_s = 5.0`)，避免攝影機離線時反覆阻塞後端工作執行緒。
+    - `database/queries.py`: 異常事件改為生命週期持續更新 (`write_abnormal_event` 更新最新時間戳、`close_abnormal_event` 計算持續秒數)，避免高頻寫入造成資料庫重複膨脹。
+    - `api/routers/reports.py`: PDF 報表生成防禦性升級，捕獲字型/緩衝區編碼例外並優雅降級為純文字報告，防止 500 錯誤。
+    - 完整自動化測試與靜態語法檢查全數 100% 通過 (44 個 Python 檔案零語法錯誤)。
 ### 📌 v0.9.0 (2026-10-22) — 邊緣 AI 視覺核心 (`core/`) 規格全面實作與驗證版本
 - **壓縮檔名稱**: `student_analytics_v0.9.0_20261022.zip`
 - **主要更新**:

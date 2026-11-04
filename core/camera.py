@@ -51,6 +51,8 @@ class CameraManager:
         self.cap: Optional[cv2.VideoCapture] = None
         self.last_frame_time: float = 0.0
         self._is_connected: bool = False
+        self._last_failed_connect_time: float = 0.0
+        self._connect_cooldown_s: float = 5.0
 
     def connect(self, raise_on_failure: bool = False) -> bool:
         """
@@ -65,9 +67,18 @@ class CameraManager:
         if isinstance(cid, str) and cid.isdigit():
             cid = int(cid)
 
+        # Anti-freeze protection: avoid hammering hardware in a tight loop when absent
+        now = time.time()
+        if not self._is_connected and (now - self._last_failed_connect_time) < self._connect_cooldown_s:
+            if raise_on_failure:
+                raise CameraConnectionError(f"Camera '{self.camera_id}' connection in cooldown.")
+            return False
+
         logger.info("Attempting connection to camera '%s'...", self.camera_id)
 
-        for attempt in range(1, self.max_retries + 1):
+        # For initial detection, 3 retries are sufficient to detect absent hardware without long stalls
+        retries = min(self.max_retries, 3) if not self._is_connected else self.max_retries
+        for attempt in range(1, retries + 1):
             try:
                 if self.cap is not None:
                     self.cap.release()
@@ -89,7 +100,7 @@ class CameraManager:
                         self.last_frame_time = time.time()
                         logger.info(
                             "Camera '%s' successfully connected on attempt %d/%d.",
-                            self.camera_id, attempt, self.max_retries
+                            self.camera_id, attempt, retries
                         )
                         return True
                     else:
@@ -98,14 +109,15 @@ class CameraManager:
             except Exception as exc:
                 logger.warning(
                     "Camera connection attempt %d/%d failed: %s",
-                    attempt, self.max_retries, exc
+                    attempt, retries, exc
                 )
 
-            if attempt < self.max_retries:
+            if attempt < retries:
                 time.sleep(self.retry_interval)
 
         self._is_connected = False
-        msg = f"Failed to connect to camera '{self.camera_id}' after {self.max_retries} attempts."
+        self._last_failed_connect_time = time.time()
+        msg = f"Failed to connect to camera '{self.camera_id}' after {retries} attempts."
         logger.error(msg)
         if raise_on_failure:
             raise CameraConnectionError(msg)

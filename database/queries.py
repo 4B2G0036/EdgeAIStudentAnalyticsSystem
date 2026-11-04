@@ -268,15 +268,35 @@ def write_attention_metric(session_id, attention_score, student_count):
 
 
 def write_abnormal_event(session_id, student_id, event_type):
-    "Write an abnormal event record to Abnormal_Events collection."
+    """
+    Write or update an abnormal event record in Abnormal_Events collection.
+    Lifecycle-aware: If an event of the same type is already active (ended_at is None),
+    updates updated_at instead of creating duplicate records every frame.
+    """
     db = get_db()
+    now = datetime.utcnow()
     try:
+        # Check for currently active event for this student and event type
+        existing = db["Abnormal_Events"].find_one_and_update(
+            {
+                "session_id": session_id,
+                "student_id": student_id,
+                "event_type": event_type,
+                "ended_at": None
+            },
+            {"$set": {"updated_at": now}},
+            return_document=True
+        )
+        if existing:
+            return True
+
+        # Otherwise insert a new active abnormal event
         doc = {
             "session_id": session_id,
             "student_id": student_id,
             "event_type": event_type,
-            "started_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow(),
+            "started_at": now,
+            "updated_at": now,
             "ended_at": None,
             "ended_reason": None
         }
@@ -285,4 +305,27 @@ def write_abnormal_event(session_id, student_id, event_type):
     except Exception as e:
         logger.error(f"Failed event write: {e}")
         return False
+
+
+def close_abnormal_event(session_id, student_id, event_type=None, reason="normal_restored"):
+    """Close active abnormal events for a student when normal posture is restored."""
+    db = get_db()
+    now = datetime.utcnow()
+    query = {"session_id": session_id, "student_id": student_id, "ended_at": None}
+    if event_type:
+        query["event_type"] = event_type
+    try:
+        active_events = list(db["Abnormal_Events"].find(query))
+        for ev in active_events:
+            started = ev.get("started_at", now)
+            duration = float((now - started).total_seconds())
+            db["Abnormal_Events"].update_one(
+                {"_id": ev["_id"]},
+                {"$set": {"ended_at": now, "ended_reason": reason, "duration_seconds": duration}}
+            )
+        return len(active_events)
+    except Exception as e:
+        logger.error(f"Failed to close abnormal event: {e}")
+        return 0
+
 
