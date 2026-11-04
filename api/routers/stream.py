@@ -50,27 +50,26 @@ def _get_fallback_background():
 def generate_fallback_frame(text="攝影機串流傳輸中 (等待畫面)..."):
     """Generate a clean dark-themed placeholder frame if hardware camera fails to open."""
     img = _get_fallback_background()
-        # Draw header banner
-    cv2.rectangle(img, (0, 0), (640, 45), (15, 22, 41), -1)
-    draw_text_bgr(img, "STUDENT ANALYTICS AI STREAM (LIVE 5 FPS)", (15, 12), font_size=15, color_bgr=(99, 179, 237), bold=True)
+    # Draw header banner
+    cv2.rectangle(img, (0, 0), (640, 42), (15, 22, 41), -1)
+    draw_text_bgr(img, "STUDENT ANALYTICS AI STREAM (LIVE 5 FPS)", (15, 12), font_size=14, color_bgr=(99, 179, 237), bold=True)
                 
-    # Draw time string
-    time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    draw_text_bgr(img, f"TIME: {time_str}", (420, 14), font_size=13, color_bgr=(136, 146, 176), bold=False)
+    # Draw time string and animated live indicator
+    time_str = datetime.now().strftime("%H:%M:%S")
+    draw_text_bgr(img, time_str, (470, 13), font_size=13, color_bgr=(136, 146, 176), bold=False)
+
+    second = int(time.time())
+    if second % 2 == 0:
+        cv2.circle(img, (565, 21), 5, (104, 211, 145), -1)
+        draw_text_bgr(img, "LIVE", (578, 13), font_size=13, color_bgr=(104, 211, 145), bold=True)
+    else:
+        cv2.circle(img, (565, 21), 5, (74, 85, 104), -1)
+        draw_text_bgr(img, "LIVE", (578, 13), font_size=13, color_bgr=(136, 146, 176), bold=True)
                 
     # Draw center box
     cv2.rectangle(img, (80, 100), (560, 380), (30, 40, 65), 2)
     draw_text_bgr(img, "AI VISION CORE STREAM", (200, 215), font_size=20, color_bgr=(232, 234, 246), bold=True)
     draw_text_bgr(img, text, (180, 260), font_size=15, color_bgr=(79, 209, 199), bold=True)
-                
-    # Draw animated live indicator
-    second = int(time.time())
-    if second % 2 == 0:
-        cv2.circle(img, (530, 22), 6, (104, 211, 145), -1)
-        draw_text_bgr(img, "LIVE", (545, 14), font_size=13, color_bgr=(104, 211, 145), bold=True)
-    else:
-        cv2.circle(img, (530, 22), 6, (74, 85, 104), -1)
-        draw_text_bgr(img, "LIVE", (545, 14), font_size=13, color_bgr=(136, 146, 176), bold=True)
 
     # Encode to JPEG
     ret, jpeg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 80])

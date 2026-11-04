@@ -1145,7 +1145,7 @@ function renderActiveSession(session) {
         </div>
       </div>
       <div style="margin-top:0.75rem;font-size:0.75rem;display:flex;align-items:center;gap:6px;overflow:hidden;">
-        <span style="color:var(--accent-red);font-weight:600;flex-shrink:0;">⚠️ 最新異常：</span>
+        <span id="live-event-label" style="color:var(--accent-yellow);font-weight:600;flex-shrink:0;">🔔 最新動態：</span>
         <span id="live-latest-event" style="color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">無異常事件</span>
       </div>
     </div>
@@ -1180,7 +1180,26 @@ function renderActiveSession(session) {
         else if (data.attention_score >= 60) scoreEl.style.color = 'var(--accent-yellow)';
         else scoreEl.style.color = 'var(--accent-red)';
       }
-      if (eventEl) eventEl.textContent = data.latest_event || '無異常事件';
+      if (eventEl) {
+        const evText = data.latest_event || '無異常事件';
+        eventEl.textContent = evText;
+        const labelEl = document.getElementById('live-event-label');
+        if (labelEl) {
+          if (evText.includes('舉手') || evText.includes('HAND_RAISED')) {
+            labelEl.textContent = '🙋‍♂️ 課堂互動：';
+            labelEl.style.color = 'var(--accent-cyan)';
+          } else if (evText.includes('趴睡') || evText.includes('手機')) {
+            labelEl.textContent = '🚨 異常告警：';
+            labelEl.style.color = 'var(--accent-red)';
+          } else if (evText.includes('托腮') || evText.includes('分心')) {
+            labelEl.textContent = '⚠️ 注意提醒：';
+            labelEl.style.color = 'var(--accent-yellow)';
+          } else {
+            labelEl.textContent = '🔔 最新動態：';
+            labelEl.style.color = 'var(--text-muted)';
+          }
+        }
+      }
     } catch (err) {
       console.warn("Polling active metrics failed:", err);
     }
@@ -1470,17 +1489,33 @@ function updateHudUI(score, students, latestEvent, events) {
     const now = new Date().toLocaleTimeString('zh-TW', { hour12: false });
     const newAlerts = [];
 
+    const formatEventItem = (ev) => {
+      let icon = '⚠️';
+      let color = 'var(--accent-yellow)';
+      if (ev.includes('舉手') || ev.includes('HAND_RAISED')) {
+        icon = '🙋‍♂️';
+        color = 'var(--accent-cyan)';
+      } else if (ev.includes('托腮') || ev.includes('HEAD_SUPPORT')) {
+        icon = '💡';
+        color = 'var(--accent-yellow)';
+      } else if (ev.includes('趴睡') || ev.includes('SLEEPING') || ev.includes('手機') || ev.includes('PHONE')) {
+        icon = '🚨';
+        color = 'var(--accent-red)';
+      }
+      return { text: `[${now}] ${icon} ${ev}`, color };
+    };
+
     if (events && Array.isArray(events) && events.length > 0) {
       for (const ev of events) {
-        newAlerts.push(`[${now}] ⚠️ ${ev}`);
+        newAlerts.push(formatEventItem(ev));
       }
     } else if (latestEvent && latestEvent !== '' && latestEvent !== '無異常事件' && latestEvent !== '姿態標準 (專注聽講)' && !latestEvent.includes('待命')) {
-      newAlerts.push(`[${now}] ⚠️ ${latestEvent}`);
+      newAlerts.push(formatEventItem(latestEvent));
     }
 
-    for (const entry of newAlerts) {
-      if (alertHistory.length === 0 || alertHistory[alertHistory.length - 1] !== entry) {
-        alertHistory.push(entry);
+    for (const item of newAlerts) {
+      if (alertHistory.length === 0 || alertHistory[alertHistory.length - 1].text !== item.text) {
+        alertHistory.push(item);
       }
     }
 
@@ -1490,8 +1525,8 @@ function updateHudUI(score, students, latestEvent, events) {
 
     if (alertHistory.length > 0) {
       alertLog.innerHTML = alertHistory.slice().reverse().map(e =>
-        `<div style="color:var(--accent-yellow); font-size:0.78rem; margin-bottom:3px; display:flex; align-items:center; gap:4px;">
-           <span>${e}</span>
+        `<div style="color:${e.color || 'var(--accent-yellow)'}; font-size:0.78rem; margin-bottom:3px; display:flex; align-items:center; gap:4px;">
+           <span>${e.text}</span>
          </div>`
       ).join('');
     } else {
