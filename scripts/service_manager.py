@@ -179,11 +179,38 @@ def read_status():
         return {}
 
 
+def check_url_diagnosis(url, timeout=3.0):
+    """檢查端點連線狀態，回傳 (is_healthy, error_msg)"""
+    try:
+        req = urllib.request.Request(url, headers={"Cache-Control": "no-cache", "User-Agent": "student-analytics-service-manager"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data and data.get("status") == "healthy" and data.get("database", {}).get("status") == "connected":
+                    return True, None
+                return False, f"服務回報非健康狀態: {data}"
+            return False, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        if e.code == 502:
+            return False, "HTTP 502 Bad Gateway (Cloudflare 已收到請求，但無法連線至本機 API，請確認後台 Service 協議為 HTTP、埠號為 8000)"
+        return False, f"HTTP {e.code} ({e.reason})"
+    except urllib.error.URLError as e:
+        msg = str(e.reason)
+        if "11001" in msg or "getaddrinfo" in msg or "Name or service not known" in msg:
+            return False, "DNS 解析失敗 (網域名稱未在網際網路生效，請確認該網域已在 Cloudflare 啟用 DNS 代管)"
+        if "SSL" in msg or "certificate" in msg.lower():
+            return False, f"SSL 憑證握手失敗 ({msg})"
+        return False, f"連線失敗: {msg}"
+    except Exception as e:
+        return False, str(e)
+
+
 def tunnel_healthy(tunnel_url, timeout=6.0):
     """對外穿透網址能端對端連回本機 API (且資料庫已連線) 才算健康"""
     if not tunnel_url:
         return False
-    return api_healthy(tunnel_url, timeout=timeout) is not None
+    ok, _ = check_url_diagnosis(f"{tunnel_url}/health", timeout=timeout)
+    return ok
 
 
 def _tunnel_command():
@@ -270,12 +297,19 @@ def start_tunnel(timeout=45):
 
 
 def wait_tunnel_reachable(url, timeout=45):
-    """Quick Tunnel 的 DNS 需要數秒傳播，輪詢直到可由公網存取"""
-    for _ in range(int(timeout / 2)):
-        if tunnel_healthy(url):
-            return True
+    """穿透通道網址驗證：輪詢直到可由公網存取，若 DNS 永久解析失敗則提早報錯"""
+    attempts = int(timeout / 2)
+    last_reason = None
+    for attempt in range(attempts):
+        ok, reason = check_url_diagnosis(f"{url}/health", timeout=3.0)
+        if ok:
+            return True, None
+        last_reason = reason
+        if reason and "DNS 解析失敗" in reason and attempt >= 1:
+            # 網域名稱在公網完全不存在，無需持續等待
+            break
         time.sleep(2)
-    return False
+    return False, last_reason
 
 
 def ensure_tunnel(restart=False):
@@ -307,20 +341,29 @@ def ensure_tunnel(restart=False):
             if err:
                 log(f"  ⚠️ 具名 Tunnel 啟動失敗: {err}")
                 continue
-            if wait_tunnel_reachable(public_url, timeout=60):
+            res = wait_tunnel_reachable(public_url, timeout=30)
+            ok = res[0] if isinstance(res, tuple) else bool(res)
+            reason = res[1] if isinstance(res, tuple) and len(res) > 1 else None
+            if ok:
                 log(f"  🟢 [具名 Tunnel 驗證通過] {public_url} (固定網址)")
                 publish_api_url(public_url, "Cloudflare Named Tunnel", pid)
                 return public_url
-            log("  ⚠️ 具名 Tunnel 已註冊但固定網址無法連回本機 API，請檢查 Public Hostname 是否指向 http://localhost:8000")
+            log(f"  ⚠️ 具名 Tunnel 診斷失敗: {reason or '連線超時'}")
+            log("     (請檢查 Cloudflare 後台 Public Hostname 的 Service 是否為 http://localhost:8000，且 Domain 是否為真實網域)")
             kill_process_tree(pid)
-        log("  🔴 具名 Tunnel 無法使用，退回 Quick Tunnel (臨時網址)")
+            if reason and "DNS 解析失敗" in reason:
+                # 網域名稱在公網不存在，多次重試亦無效，直接跳出降級
+                break
+        log("  🔴 具名 Tunnel 未通過健康驗證，自動降級啟用 Quick Tunnel 臨時網址...")
 
     for attempt in range(1, 4):
         log(f"  📡 正在建立 Cloudflare Tunnel 穿透通道 (第 {attempt}/3 次嘗試)...")
         pid, url = start_tunnel()
         if not url:
             continue
-        if wait_tunnel_reachable(url):
+        res = wait_tunnel_reachable(url)
+        ok = res[0] if isinstance(res, tuple) else bool(res)
+        if ok:
             log(f"  🟢 [穿透通道驗證通過] {url}")
         else:
             log(f"  ⚠️ 穿透網址已產生但尚未可由公網存取，仍先行發佈: {url}")
