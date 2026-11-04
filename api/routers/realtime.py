@@ -1,9 +1,10 @@
 import time
+import asyncio
 import logging
 import numpy as np
 import cv2
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from fastapi import APIRouter, File, UploadFile, Request, HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -57,7 +58,7 @@ class RealtimeMetricsResponse(BaseModel):
 async def get_global_realtime_metrics():
     now_iso = datetime.utcnow().isoformat()
     try:
-        active_session = database.get_active_session()
+        active_session = await asyncio.to_thread(database.get_active_session)
         
         # Check if we have recent live AI inference in memory
         is_live_fresh = (time.time() - _live_state["last_updated"]) < 10.0
@@ -77,7 +78,7 @@ async def get_global_realtime_metrics():
             )
             
         session_id = active_session["session_id"]
-        live_metrics = database.get_active_session_metrics(session_id) or {}
+        live_metrics = (await asyncio.to_thread(database.get_active_session_metrics, session_id)) or {}
         
         # Blend in-memory live inference if available
         current_score = _live_state["attention_score"] if is_live_fresh else float(live_metrics.get("attention_score", 100.0))
@@ -109,6 +110,48 @@ async def get_global_realtime_metrics():
             timestamp=now_iso
         )
 
+
+def _process_webcam_frame_sync(body: bytes) -> Tuple[Optional[dict], Optional[str]]:
+    """CPU-bound and DB synchronous worker function executed in worker threadpool."""
+    nparr = np.frombuffer(body, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if frame is None:
+        return None, "Cannot decode image"
+
+    # Run AI Pose & Attention Analyzer
+    analyzer = PoseAnalyzer.get_instance()
+    analysis = analyzer.analyze_frame(frame, draw_overlay=False)
+
+    score = analysis["attention_score"]
+    count = analysis["student_count"]
+    latest_event = analysis["latest_event"]
+    events = analysis["events"]
+
+    # Update in-memory state
+    update_live_state(score, count, latest_event, events)
+
+    # If a session is active, write to MongoDB
+    active_session = database.get_active_session()
+    if active_session:
+        sid = active_session["session_id"]
+        if count > 0:
+            database.write_attention_metric(sid, score, count)
+        for ev in events:
+            # ev format: "S001: 疑似使用手機 (PHONE_SUSPECTED)"
+            parts = ev.split(":", 1)
+            student_id = parts[0].strip()
+            event_type = parts[1].strip() if len(parts) > 1 else "abnormal"
+            database.write_abnormal_event(sid, student_id, event_type)
+
+    return {
+        "status": "ok",
+        "student_count": count,
+        "attention_score": score,
+        "latest_event": latest_event,
+        "events": events
+    }, None
+
+
 @router.post(
     "/realtime/frame",
     summary="接收前端 WebCam 影格進行 AI 推論分析",
@@ -116,48 +159,18 @@ async def get_global_realtime_metrics():
 )
 async def analyze_webcam_frame(request: Request):
     try:
-        # Read raw image bytes
+        # Read raw image bytes asynchronously from network
         body = await request.body()
         if not body or len(body) < 100:
             raise HTTPException(status_code=400, detail="Empty image data")
-            
-        nparr = np.frombuffer(body, np.uint8)
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if frame is None:
-            raise HTTPException(status_code=400, detail="Cannot decode image")
 
-        # Run AI Pose & Attention Analyzer
-        analyzer = PoseAnalyzer.get_instance()
-        analysis = analyzer.analyze_frame(frame, draw_overlay=False)
+        # Offload image decoding, YOLOv8-Pose inference, and DB writes to worker thread
+        # This prevents blocking the asyncio event loop during heavy CPU inference
+        result, error_msg = await asyncio.to_thread(_process_webcam_frame_sync, body)
+        if error_msg:
+            raise HTTPException(status_code=400, detail=error_msg)
 
-        score = analysis["attention_score"]
-        count = analysis["student_count"]
-        latest_event = analysis["latest_event"]
-        events = analysis["events"]
-
-        # Update in-memory state
-        update_live_state(score, count, latest_event, events)
-
-        # If a session is active, write to MongoDB
-        active_session = database.get_active_session()
-        if active_session:
-            sid = active_session["session_id"]
-            if count > 0:
-                database.write_attention_metric(sid, score, count)
-            for ev in events:
-                # ev format: "S001: 疑似使用手機 (PHONE_SUSPECTED)"
-                parts = ev.split(":", 1)
-                student_id = parts[0].strip()
-                event_type = parts[1].strip() if len(parts) > 1 else "abnormal"
-                database.write_abnormal_event(sid, student_id, event_type)
-
-        return {
-            "status": "ok",
-            "student_count": count,
-            "attention_score": score,
-            "latest_event": latest_event,
-            "events": events
-        }
+        return result
     except HTTPException:
         raise
     except Exception as e:

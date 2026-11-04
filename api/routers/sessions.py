@@ -1,6 +1,7 @@
 import uuid
 import logging
 import io
+import asyncio
 from datetime import datetime
 from typing import Optional, List
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, status
@@ -56,7 +57,7 @@ class SessionUpdate(BaseModel):
 )
 async def start_new_session(payload: SessionCreate):
     # 1. Prevent duplicate active session
-    active_session = database.get_active_session()
+    active_session = await asyncio.to_thread(database.get_active_session)
     if active_session:
         logger.warning(f"Conflict: Session {active_session['session_id']} is already active.")
         raise HTTPException(
@@ -70,7 +71,8 @@ async def start_new_session(payload: SessionCreate):
     # 2. Initialize a new session ID (UUID v4)
     session_id = str(uuid.uuid4())
     try:
-        session_doc = database.create_session(
+        session_doc = await asyncio.to_thread(
+            database.create_session,
             session_id=session_id,
             class_name=payload.class_name,
             teacher=payload.teacher,
@@ -94,7 +96,7 @@ async def start_new_session(payload: SessionCreate):
 )
 async def end_active_session(session_id: str, background_tasks: BackgroundTasks):
     # 1. Fetch current session status
-    session = database.get_session_by_id(session_id)
+    session = await asyncio.to_thread(database.get_session_by_id, session_id)
     if not session:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -112,7 +114,7 @@ async def end_active_session(session_id: str, background_tasks: BackgroundTasks)
     
     # 3. Update ended_at in DB
     try:
-        updated_session = database.end_session(session_id)
+        updated_session = await asyncio.to_thread(database.end_session, session_id)
         
         # 4. Trigger PDF Report generation asynchronously via BackgroundTasks
         logger.info(f"Triggering background task to generate PDF report for session {session_id}.")
@@ -143,7 +145,13 @@ async def get_sessions_list(
     status: Optional[str] = Query(None, description="篩選課程狀態 (active 或 ended)")
 ):
     try:
-        sessions = database.list_sessions(limit=limit, offset=offset, search_query=search, status_filter=status)
+        sessions = await asyncio.to_thread(
+            database.list_sessions, 
+            limit=limit, 
+            offset=offset, 
+            search_query=search, 
+            status_filter=status
+        )
         # Format datetimes
         for s in sessions:
             if s.get("started_at"):
@@ -162,7 +170,7 @@ async def get_sessions_list(
     description="依課程 UUID 取得該門課程的完整元數據記錄。"
 )
 async def get_session_details(session_id: str):
-    session = database.get_session_by_id(session_id)
+    session = await asyncio.to_thread(database.get_session_by_id, session_id)
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="找不到該課程記錄")
     if session.get("started_at"):
@@ -178,7 +186,7 @@ async def get_session_details(session_id: str):
     description="依課程 UUID 查詢該課程的聚合數據，包含最大並行人數、平均專注度分數與累積異常事件次數。"
 )
 async def get_session_summary_data(session_id: str):
-    summary = database.get_session_summary(session_id)
+    summary = await asyncio.to_thread(database.get_session_summary, session_id)
     if not summary:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="找不到該課程統計摘要")
         
@@ -197,7 +205,7 @@ async def get_session_summary_data(session_id: str):
 )
 async def update_session_metadata(session_id: str, payload: SessionUpdate):
     # 1. Fetch current session status
-    session = database.get_session_by_id(session_id)
+    session = await asyncio.to_thread(database.get_session_by_id, session_id)
     if not session:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -213,7 +221,7 @@ async def update_session_metadata(session_id: str, payload: SessionUpdate):
         )
         
     try:
-        updated_session = database.update_session(session_id, update_data)
+        updated_session = await asyncio.to_thread(database.update_session, session_id, update_data)
         if not updated_session:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -238,14 +246,14 @@ async def update_session_metadata(session_id: str, payload: SessionUpdate):
     description="依課程 UUID 產生並下載該門課程的摘要統計文字報告。"
 )
 async def download_session_report(session_id: str):
-    session = database.get_session_by_id(session_id)
+    session = await asyncio.to_thread(database.get_session_by_id, session_id)
     if not session:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="找不到該課程記錄"
         )
         
-    summary = database.get_session_summary(session_id)
+    summary = await asyncio.to_thread(database.get_session_summary, session_id)
     if not summary:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -282,7 +290,7 @@ async def download_session_report(session_id: str):
     description="依課程 UUID 永久刪除課程紀錄，並清理相關 metrics 與異常事件。進行中的課程不允許刪除。"
 )
 async def delete_session_record(session_id: str):
-    session = database.get_session_by_id(session_id)
+    session = await asyncio.to_thread(database.get_session_by_id, session_id)
     if not session:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -297,7 +305,7 @@ async def delete_session_record(session_id: str):
         )
         
     try:
-        success = database.delete_session(session_id)
+        success = await asyncio.to_thread(database.delete_session, session_id)
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -323,13 +331,13 @@ async def get_realtime_metrics(session_id: str):
     # Always return a valid response – even when Attention_Metrics is empty for this session.
     # Returning 404 would cause the JS poll to throw and stop updating the HUD.
     from datetime import datetime as _dt
-    session = database.get_session_by_id(session_id)
+    session = await asyncio.to_thread(database.get_session_by_id, session_id)
     if not session:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="找不到該課程記錄"
         )
-    metrics = database.get_active_session_metrics(session_id)
+    metrics = await asyncio.to_thread(database.get_active_session_metrics, session_id)
     if not metrics:
         # Session exists but no AI data pushed yet – return sensible defaults
         metrics = {
@@ -353,11 +361,11 @@ async def get_session_time_series_metrics(
     end_ts: Optional[float] = Query(None, description="結束時間戳記 (Epoch seconds)"),
     limit: int = Query(500, ge=1, le=2000, description="最大筆數限制")
 ):
-    session = database.get_session_by_id(session_id)
+    session = await asyncio.to_thread(database.get_session_by_id, session_id)
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="找不到該課程記錄")
     
-    return database.get_session_metrics(session_id, start_ts=start_ts, end_ts=end_ts, limit=limit)
+    return await asyncio.to_thread(database.get_session_metrics, session_id, start_ts=start_ts, end_ts=end_ts, limit=limit)
 
 @router.get(
     "/{session_id}/events",
@@ -369,11 +377,11 @@ async def get_session_abnormal_events(
     session_id: str,
     type: Optional[str] = Query(None, description="異常事件類型，例如: phone_suspected 或 sleeping")
 ):
-    session = database.get_session_by_id(session_id)
+    session = await asyncio.to_thread(database.get_session_by_id, session_id)
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="找不到該課程記錄")
         
-    return database.get_session_events(session_id, event_type=type)
+    return await asyncio.to_thread(database.get_session_events, session_id, event_type=type)
 
 async def dummy_generate_report_task(session_id: str):
     logger.info(f"[Background Task] Start generating PDF report for session: {session_id}")

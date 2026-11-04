@@ -2,8 +2,11 @@ import cv2
 import time
 import random
 import asyncio
+import queue
+import threading
 import logging
 from datetime import datetime
+from typing import Optional, Set
 from fastapi import APIRouter, Response, HTTPException, status
 from fastapi.responses import StreamingResponse
 
@@ -16,9 +19,9 @@ from api.routers.realtime import update_live_state
 logger = logging.getLogger("api.routers.stream")
 router = APIRouter(prefix="/api/v1", tags=["攝影機實時串流與監控"])
 
-# Global CameraManager instance
+# Global CameraManager and StreamBroadcaster instances
 _camera_manager = None
-_sim_task = None
+_broadcaster: Optional["StreamBroadcaster"] = None
 
 def get_camera_manager():
     global _camera_manager
@@ -65,69 +68,166 @@ def generate_fallback_frame(text="攝影機串流傳輸中 (等待畫面)..."):
     ret, jpeg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 80])
     return jpeg.tobytes()
 
-def mjpeg_frame_generator():
-    """Generator for streaming camera frames with real-time YOLOv8-Pose AI inference."""
-    cam = get_camera_manager()
-    analyzer = PoseAnalyzer.get_instance()
-    throttle = 1.0 / config.TARGET_FPS
+
+class StreamBroadcaster:
+    """
+    Thread-safe Single Producer - Multiple Consumers Frame Broadcaster.
     
-    while True:
-        start_time = time.time()
-        frame_bytes = None
-        
-        try:
-            success, frame = cam.read_frame()
-            if success and frame is not None:
-                # Run YOLOv8-Pose AI inference with bounding box & skeleton overlay
-                analysis = analyzer.analyze_frame(frame, draw_overlay=True)
-                annotated_frame = analysis["annotated_frame"]
-                
-                score = analysis["attention_score"]
-                count = analysis["student_count"]
-                latest_event = analysis["latest_event"]
-                events = analysis["events"]
+    Guarantees:
+      1. Only 1 thread accesses OpenCV CameraManager.
+      2. AI Inference (YOLOv8-Pose) executes at most once per frame interval, regardless of listener count.
+      3. Zero CPU when 0 clients are subscribed (worker idles on threading.Event).
+      4. Drop-frame protection so slow/jittery network clients never build up latency.
+    """
+    def __init__(self):
+        self._subscribers: Set[queue.Queue] = set()
+        self._lock = threading.Lock()
+        self._has_subscribers = threading.Event()
+        self._stop_event = threading.Event()
+        self._latest_frame: Optional[bytes] = None
+        self._worker_thread: Optional[threading.Thread] = None
 
-                # Update live in-memory state
-                update_live_state(score, count, latest_event, events)
+    @property
+    def viewer_count(self) -> int:
+        with self._lock:
+            return len(self._subscribers)
 
-                # Persist to DB if session is active
-                active_session = database.get_active_session()
-                if active_session:
-                    sid = active_session["session_id"]
-                    if count > 0:
-                        database.write_attention_metric(sid, score, count)
-                    for ev in events:
-                        parts = ev.split(":", 1)
-                        student_id = parts[0].strip()
-                        event_type = parts[1].strip() if len(parts) > 1 else "abnormal"
-                        database.write_abnormal_event(sid, student_id, event_type)
+    def start(self):
+        with self._lock:
+            if self._worker_thread is None or not self._worker_thread.is_alive():
+                self._stop_event.clear()
+                self._worker_thread = threading.Thread(
+                    target=self._run_loop,
+                    name="StreamBroadcasterWorker",
+                    daemon=True
+                )
+                self._worker_thread.start()
 
-                # Add overlay banner with timestamp and stats
-                height, width = annotated_frame.shape[:2]
-                cv2.rectangle(annotated_frame, (0, 0), (width, 35), (10, 14, 26), -1)
-                time_str = datetime.now().strftime("%H:%M:%S")
-                stats_str = f"人數: {count} | 專注度: {score:.0f}分 | {time_str}"
-                cv2.putText(annotated_frame, f"[AI CORE LIVE] {stats_str}", (15, 24), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (79, 209, 199), 1, cv2.LINE_AA)
-                
-                ret, jpeg = cv2.imencode('.jpg', annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
-                if ret:
-                    frame_bytes = jpeg.tobytes()
-        except Exception as e:
-            logger.warning(f"Error in stream processing: {e}")
-            
-        if frame_bytes is None:
-            # Fallback frame
-            frame_bytes = generate_fallback_frame("攝影機等待畫面中...")
+    def subscribe(self) -> queue.Queue:
+        q: queue.Queue = queue.Queue(maxsize=2)
+        with self._lock:
+            if self._latest_frame is not None:
+                try:
+                    q.put_nowait(self._latest_frame)
+                except queue.Full:
+                    pass
+            self._subscribers.add(q)
+            self._has_subscribers.set()
+            count = len(self._subscribers)
+        self.start()
+        logger.info(f"Stream client connected. Active subscribers: {count}")
+        return q
 
-        # MJPEG multipart frame formatting
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-               
-        # Control FPS loop interval
-        elapsed = time.time() - start_time
-        sleep_dur = max(0.01, throttle - elapsed)
-        time.sleep(sleep_dur)
+    def unsubscribe(self, q: queue.Queue):
+        with self._lock:
+            self._subscribers.discard(q)
+            count = len(self._subscribers)
+            if count == 0:
+                self._has_subscribers.clear()
+        logger.info(f"Stream client disconnected. Active subscribers: {count}")
+
+    def _broadcast_frame(self, frame_bytes: bytes):
+        self._latest_frame = frame_bytes
+        with self._lock:
+            for q in list(self._subscribers):
+                try:
+                    if q.full():
+                        try:
+                            q.get_nowait()
+                        except queue.Empty:
+                            pass
+                    q.put_nowait(frame_bytes)
+                except Exception:
+                    pass
+
+    def _run_loop(self):
+        logger.info("StreamBroadcaster background worker started.")
+        cam = get_camera_manager()
+        analyzer = PoseAnalyzer.get_instance()
+        throttle = 1.0 / config.TARGET_FPS
+
+        while not self._stop_event.is_set():
+            # Idle and conserve CPU when no subscribers are watching
+            if not self._has_subscribers.wait(timeout=0.5):
+                continue
+
+            start_time = time.time()
+            frame_bytes = None
+
+            try:
+                success, frame = cam.read_frame()
+                if success and frame is not None:
+                    # Run YOLOv8-Pose AI inference with bounding box & skeleton overlay
+                    analysis = analyzer.analyze_frame(frame, draw_overlay=True)
+                    annotated_frame = analysis["annotated_frame"]
+
+                    score = analysis["attention_score"]
+                    count = analysis["student_count"]
+                    latest_event = analysis["latest_event"]
+                    events = analysis["events"]
+
+                    # Update live in-memory state
+                    update_live_state(score, count, latest_event, events)
+
+                    # Persist to DB if session is active
+                    active_session = database.get_active_session()
+                    if active_session:
+                        sid = active_session["session_id"]
+                        if count > 0:
+                            database.write_attention_metric(sid, score, count)
+                        for ev in events:
+                            parts = ev.split(":", 1)
+                            student_id = parts[0].strip()
+                            event_type = parts[1].strip() if len(parts) > 1 else "abnormal"
+                            database.write_abnormal_event(sid, student_id, event_type)
+
+                    # Add overlay banner with timestamp and stats
+                    height, width = annotated_frame.shape[:2]
+                    cv2.rectangle(annotated_frame, (0, 0), (width, 35), (10, 14, 26), -1)
+                    time_str = datetime.now().strftime("%H:%M:%S")
+                    stats_str = f"人數: {count} | 專注度: {score:.0f}分 | {time_str}"
+                    cv2.putText(annotated_frame, f"[AI CORE LIVE] {stats_str}", (15, 24), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (79, 209, 199), 1, cv2.LINE_AA)
+
+                    ret, jpeg = cv2.imencode('.jpg', annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                    if ret:
+                        frame_bytes = jpeg.tobytes()
+            except Exception as e:
+                logger.warning(f"Error in stream processing: {e}")
+
+            if frame_bytes is None:
+                frame_bytes = generate_fallback_frame("攝影機等待畫面中...")
+
+            self._broadcast_frame(frame_bytes)
+
+            elapsed = time.time() - start_time
+            sleep_dur = max(0.01, throttle - elapsed)
+            time.sleep(sleep_dur)
+
+        logger.info("StreamBroadcaster background worker stopped.")
+
+
+def get_stream_broadcaster() -> StreamBroadcaster:
+    global _broadcaster
+    if _broadcaster is None:
+        _broadcaster = StreamBroadcaster()
+    return _broadcaster
+
+
+def mjpeg_frame_generator():
+    """Generator yielding broadcasted camera frames to a connected client."""
+    broadcaster = get_stream_broadcaster()
+    q = broadcaster.subscribe()
+    try:
+        while True:
+            try:
+                frame_bytes = q.get(timeout=2.0)
+            except queue.Empty:
+                frame_bytes = broadcaster._latest_frame or generate_fallback_frame("攝影機等待畫面中...")
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+    finally:
+        broadcaster.unsubscribe(q)
 
 
 @router.get(
@@ -149,10 +249,12 @@ async def get_live_camera_stream():
 async def get_camera_status():
     cam = get_camera_manager()
     is_open = cam.cap is not None and cam.cap.isOpened()
+    broadcaster = get_stream_broadcaster()
     return {
         "camera_id": config.CAMERA_ID,
         "is_connected": is_open,
         "target_fps": config.TARGET_FPS,
         "resolution": "640x480",
-        "status": "online" if is_open else "standby"
+        "status": "online" if is_open else "standby",
+        "active_viewers": broadcaster.viewer_count
     }

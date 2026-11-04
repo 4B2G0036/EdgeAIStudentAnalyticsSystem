@@ -39,6 +39,8 @@
 9. **異常事件生命週期與資料庫去重優化 (`database/queries.py`)**: `write_abnormal_event` 改為對未結束之進行中事件 (`ended_at: None`) 更新最新時間戳，新增 `close_abnormal_event` 正確計算異常持續時長，徹底解決每 800ms 重複寫入造成的資料庫膨脹。
 10. **報表生成容錯強化 (`api/routers/reports.py`)**: 攔截包含 Unicode 中文字型相容性與記憶體緩衝區編碼的所有潛在例外，自動優雅降級為 UTF-8 文字報表，杜絕 500 伺服器內部錯誤。
 11. **全功能整合測試與語法檢驗套件 (`scripts/test_all_features.py`, `scripts/lint_and_check.py`)**: 支援 TestClient 記憶體回退測試與動態 Tunnel 狀態識別，44 個模組靜態程式碼檢查 0 錯誤 0 警告，單元測試通過率 100%。
+12. **FastAPI 非同步事件迴圈防阻塞優化 (`api/routers/realtime.py`, `api/routers/sessions.py`)**: 將 WebCam 影格解碼、CPU 密集型 YOLOv8-Pose 推論以及同步 PyMongo 資料庫讀寫全面遷移至 `asyncio.to_thread` 執行緒池，消除阻塞主 Event Loop 導致的請求延遲與掉幀。
+13. **MJPEG 單一生產者影格廣播器 (`api/routers/stream.py`)**: 實作 `StreamBroadcaster` (Pub-Sub Broadcaster)，多連線同時觀看串流時共享單次硬體擷取與 AI 姿態推論，無連線時自動進入 0% CPU 待命，杜絕攝影機搶佔並顯著降低多用戶存取時之伺服器負載。
 
 ---
 ### 🤖 v0.9.0 — 邊緣 AI 視覺核心 (`core/`) 規格全面實作與驗證版本 (2026-10-22)

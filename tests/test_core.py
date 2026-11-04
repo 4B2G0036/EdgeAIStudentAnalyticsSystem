@@ -218,6 +218,46 @@ def test_inference_engine_execution():
     assert len(kpts.shape) == 3 and kpts.shape[1:] == (17, 3)
 
 
+def test_stream_broadcaster_and_worker_offload():
+    """Test StreamBroadcaster multi-consumer pub-sub and webcam worker thread offloading."""
+    import cv2
+    from api.routers.stream import StreamBroadcaster
+    from api.routers.realtime import _process_webcam_frame_sync
+
+    # 1. Broadcaster pub-sub tests
+    broadcaster = StreamBroadcaster()
+    assert broadcaster.viewer_count == 0
+    assert not broadcaster._has_subscribers.is_set()
+
+    q1 = broadcaster.subscribe()
+    q2 = broadcaster.subscribe()
+    assert broadcaster.viewer_count == 2
+    assert broadcaster._has_subscribers.is_set()
+
+    # Broadcast frame
+    dummy_frame = b"fake_jpeg_bytes_123"
+    broadcaster._broadcast_frame(dummy_frame)
+    assert q1.get_nowait() == dummy_frame
+    assert q2.get_nowait() == dummy_frame
+
+    # Unsubscribe
+    broadcaster.unsubscribe(q1)
+    assert broadcaster.viewer_count == 1
+    broadcaster.unsubscribe(q2)
+    assert broadcaster.viewer_count == 0
+    assert not broadcaster._has_subscribers.is_set()
+
+    # 2. Webcam worker thread worker function
+    dummy_img = np.zeros((480, 640, 3), dtype=np.uint8)
+    ret, jpeg = cv2.imencode('.jpg', dummy_img)
+    assert ret
+    res, err = _process_webcam_frame_sync(jpeg.tobytes())
+    assert err is None
+    assert res["status"] == "ok"
+    assert "student_count" in res
+    assert "attention_score" in res
+
+
 if __name__ == "__main__":
     print("Running Edge AI Visual Core tests...")
     test_roi_polygon_filtering()
@@ -236,5 +276,7 @@ if __name__ == "__main__":
     print("  ✓ test_frame_result_structure passed")
     test_inference_engine_execution()
     print("  ✓ test_inference_engine_execution passed")
+    test_stream_broadcaster_and_worker_offload()
+    print("  ✓ test_stream_broadcaster_and_worker_offload passed")
     print("\n🎉 ALL TESTS PASSED!")
 

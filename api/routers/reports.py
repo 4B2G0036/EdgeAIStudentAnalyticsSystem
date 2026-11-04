@@ -1,5 +1,6 @@
 import io
 import time
+import asyncio
 import logging
 from collections import defaultdict
 from datetime import datetime
@@ -62,11 +63,11 @@ async def generate_and_download_report(session_id: str, request: Request):
     rate_limiter.check_rate_limit(client_ip)
     
     # 2. Check session existence
-    session = database.get_session_by_id(session_id)
+    session = await asyncio.to_thread(database.get_session_by_id, session_id)
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="找不到該課程記錄")
         
-    summary = database.get_session_summary(session_id)
+    summary = await asyncio.to_thread(database.get_session_summary, session_id)
     if not summary:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="找不到該課程統計摘要")
 
