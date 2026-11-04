@@ -209,3 +209,4 @@ def draw_labels_bgr(
     # In-place write back to avoid memory re-allocation
     np.copyto(image, np.asarray(pil_img))
     return image
+
