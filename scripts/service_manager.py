@@ -59,8 +59,12 @@ def read_env_value(key, default=""):
         with open(ENV_FILE, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
-                if line.startswith(f"{key}=") and not line.startswith("#"):
-                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    if k.strip() == key:
+                        return v.strip().strip('"').strip("'")
     except Exception:
         pass
     return default
