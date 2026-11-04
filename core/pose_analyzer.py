@@ -15,6 +15,7 @@ Integrates:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import uuid
 from typing import Optional, Sequence
@@ -84,11 +85,61 @@ class PoseAnalyzer:
         self.board_yaw_thresh: float = float(getattr(config, "BOARD_YAW_THRESHOLD", 30.0))
         self.board_pitch_thresh: float = float(getattr(config, "BOARD_PITCH_THRESHOLD", 25.0))
 
+        # Sleeping detection tuning (strict evidence + temporal filtering)
+        self.sleeping_pitch_low: float = float(getattr(config, "SLEEPING_PITCH_LOW", -60.0))
+        self.sleeping_pitch_high: float = float(getattr(config, "SLEEPING_PITCH_HIGH", 70.0))
+        self.sleeping_tilt_ratio: float = float(getattr(config, "SLEEPING_SHOULDER_TILT_RATIO", 0.45))
+        self.sleeping_confirm_frames: int = max(1, int(getattr(config, "SLEEPING_CONFIRM_FRAMES", 6)))
+        self.sleeping_release_frames: int = max(1, int(getattr(config, "SLEEPING_RELEASE_FRAMES", 3)))
+
+        # Per-track sleeping debounce state: tid -> {"on": int, "off": int, "active": bool, "seen": int}
+        self._sleep_state: dict[int, dict] = {}
+        self._sleep_lock = threading.Lock()
+        self._frame_no: int = 0
+
     @classmethod
     def get_instance(cls) -> "PoseAnalyzer":
         if cls._instance is None:
             cls._instance = PoseAnalyzer()
         return cls._instance
+
+    def _debounce_sleeping(self, tracking_id: Optional[int], raw_sleeping: bool) -> bool:
+        """
+        Temporal filter for the sleeping verdict (per tracked student).
+
+        - 連續 `sleeping_confirm_frames` 幀都符合才確認趴睡 (避免低頭撿東西、短暫抖動誤判)
+        - 已確認後，連續 `sleeping_release_frames` 幀都不符合才解除 (避免閃爍)
+        - tracking_id 為 None (直接呼叫/單元測試) 時不做時間濾波，直接回傳原始判斷
+        """
+        if tracking_id is None:
+            return raw_sleeping
+
+        with self._sleep_lock:
+            st = self._sleep_state.get(tracking_id)
+            if st is None:
+                st = {"on": 0, "off": 0, "active": False, "seen": self._frame_no}
+                self._sleep_state[tracking_id] = st
+            st["seen"] = self._frame_no
+
+            if raw_sleeping:
+                st["on"] += 1
+                st["off"] = 0
+                if not st["active"] and st["on"] >= self.sleeping_confirm_frames:
+                    st["active"] = True
+            else:
+                st["off"] += 1
+                st["on"] = 0
+                if st["active"] and st["off"] >= self.sleeping_release_frames:
+                    st["active"] = False
+            return bool(st["active"])
+
+    def _prune_sleep_state(self, max_idle_frames: int = 60) -> None:
+        """Drop debounce state of tracks that have not been seen for a while."""
+        with self._sleep_lock:
+            stale = [tid for tid, st in self._sleep_state.items()
+                     if self._frame_no - st["seen"] > max_idle_frames]
+            for tid in stale:
+                del self._sleep_state[tid]
 
     def _detect_abnormal_pose(
         self,
@@ -96,6 +147,7 @@ class PoseAnalyzer:
         bbox_xyxy: np.ndarray,
         head_yaw: float,
         head_pitch: float,
+        tracking_id: Optional[int] = None,
     ) -> set[PoseFlag]:
         """
         Deduce abnormal posture states according to the official spec:
@@ -116,23 +168,29 @@ class PoseAnalyzer:
         rhip = kpts[RIGHT_HIP]
 
         # ── 1. Sleeping Detection ──────────────────────────────────────────────
-        # Conditions:
-        # A) abs(avg_shoulder_y - nose_y) < SLEEPING_RATIO * bbox_height
-        # B) Extreme head pitch tilt (head bowed onto desk or pitch > 60)
-        # C) Severe shoulder sideways tilt (> 0.30 * bbox_height)
-        is_sleeping = False
+        # 舊版只要任一條件成立就判趴睡，且單幀即生效，輕微低頭/轉頭/關鍵點抖動就誤判。
+        # 新版採「主要證據 + 輔助證據」並加上時間濾波：
+        #   主要證據 A：鼻子貼近肩線 (|肩線Y - 鼻Y| < SLEEPING_RATIO × bbox 高度)，
+        #               代表頭部確實垂落到肩/桌面高度。
+        #   輔助證據 B：頭部俯仰角極端 (< SLEEPING_PITCH_LOW 或 > SLEEPING_PITCH_HIGH)
+        #   輔助證據 C：肩線嚴重傾斜 (> SLEEPING_SHOULDER_TILT_RATIO × bbox 高度)
+        #   判定：A 成立，或 B 與 C 同時成立；再經 _debounce_sleeping 連續多幀確認。
+        raw_sleeping = False
         if lsh[2] >= self.conf_threshold and rsh[2] >= self.conf_threshold:
             avg_shoulder_y = (lsh[1] + rsh[1]) / 2.0
-            if nose[2] >= self.conf_threshold:
-                if abs(avg_shoulder_y - nose[1]) < self.sleeping_ratio * bbox_h:
-                    is_sleeping = True
 
-            if head_pitch < -45.0 or head_pitch > 60.0:
-                is_sleeping = True
+            head_on_shoulder_line = (
+                nose[2] >= self.conf_threshold
+                and abs(avg_shoulder_y - nose[1]) < self.sleeping_ratio * bbox_h
+            )
+            extreme_pitch = (
+                head_pitch < self.sleeping_pitch_low or head_pitch > self.sleeping_pitch_high
+            )
+            severe_shoulder_tilt = abs(lsh[1] - rsh[1]) > self.sleeping_tilt_ratio * bbox_h
 
-            if abs(lsh[1] - rsh[1]) > 0.30 * bbox_h:
-                is_sleeping = True
+            raw_sleeping = head_on_shoulder_line or (extreme_pitch and severe_shoulder_tilt)
 
+        is_sleeping = self._debounce_sleeping(tracking_id, raw_sleeping)
         if is_sleeping:
             flags.add(PoseFlag.SLEEPING)
 
@@ -227,6 +285,10 @@ class PoseAnalyzer:
 
         h, w = frame.shape[:2]
 
+        # 推進影格序號並清理久未出現之追蹤 ID 的趴睡濾波狀態
+        self._frame_no += 1
+        if self._frame_no % 30 == 0:
+            self._prune_sleep_state()
         # ── Step 1: Forward inference pass (ONNX) ──────────────────────────────
         boxes_xyxy, keypoints, scores, _ = self.engine.infer(frame)
         num_dets = len(boxes_xyxy)
@@ -266,7 +328,7 @@ class PoseAnalyzer:
             yaw, pitch, _, is_looking = estimate_head_pose(kpts, tracking_id=tid)
 
             # Abnormal pose deduction
-            pose_flags = self._detect_abnormal_pose(kpts, bbox_px, yaw, pitch)
+            pose_flags = self._detect_abnormal_pose(kpts, bbox_px, yaw, pitch, tracking_id=tid)
 
             # Attention score
             score = self._calculate_score(is_looking, pose_flags)

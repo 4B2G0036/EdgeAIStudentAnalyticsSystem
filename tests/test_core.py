@@ -312,6 +312,91 @@ def test_phase3_metric_batch_writer():
     writer.stop()
 
 
+def _make_upper_body_kpts(nose_y: float, left_sh_y: float = 300.0, right_sh_y: float = 300.0) -> np.ndarray:
+    """Build a synthetic upper-body skeleton (shoulders y≈300, bbox 200..440 x 100..500)."""
+    kpts = np.zeros((17, 3), dtype=np.float32)
+    kpts[0] = [320.0, nose_y, 0.9]        # nose
+    kpts[1] = [305.0, nose_y - 20, 0.9]   # left eye
+    kpts[2] = [335.0, nose_y - 20, 0.9]   # right eye
+    kpts[5] = [260.0, left_sh_y, 0.9]     # left shoulder
+    kpts[6] = [380.0, right_sh_y, 0.9]    # right shoulder
+    return kpts
+
+
+def test_sleeping_not_triggered_by_slight_head_motion():
+    """輕微低頭 / 俯仰角中等 / 單幀抖動不可被誤判為趴睡 (回歸測試)。"""
+    analyzer = PoseAnalyzer.get_instance()
+    bbox = np.array([200.0, 100.0, 440.0, 500.0], dtype=np.float32)  # bbox_h = 400
+
+    # 1) 輕微低頭：鼻子距肩線 55px (13.8% bbox_h)。舊門檻 0.20 會誤判，新門檻 0.12 不會
+    kpts = _make_upper_body_kpts(nose_y=245.0)
+    for _ in range(analyzer.sleeping_confirm_frames + 3):
+        flags = analyzer._detect_abnormal_pose(kpts, bbox, 0.0, 0.0, tracking_id=9101)
+        assert PoseFlag.SLEEPING not in flags
+
+    # 2) 俯仰角 -50° (舊門檻 -45° 會誤判)，但肩線水平、鼻子離肩線很遠 -> 不是趴睡
+    kpts = _make_upper_body_kpts(nose_y=190.0)
+    for _ in range(analyzer.sleeping_confirm_frames + 3):
+        flags = analyzer._detect_abnormal_pose(kpts, bbox, 0.0, -50.0, tracking_id=9102)
+        assert PoseFlag.SLEEPING not in flags
+
+    # 3) 單純肩線歪斜 (舊版 0.30 即誤判)：肩高差 130px (32% bbox_h) 但頭部仍高於肩線
+    kpts = _make_upper_body_kpts(nose_y=190.0, left_sh_y=240.0, right_sh_y=370.0)
+    for _ in range(analyzer.sleeping_confirm_frames + 3):
+        flags = analyzer._detect_abnormal_pose(kpts, bbox, 0.0, 0.0, tracking_id=9103)
+        assert PoseFlag.SLEEPING not in flags
+
+
+def test_sleeping_requires_sustained_head_down_and_releases():
+    """真正趴下需連續多幀才確認；短暫動作不觸發；起身後需連續多幀才解除。"""
+    analyzer = PoseAnalyzer.get_instance()
+    bbox = np.array([200.0, 100.0, 440.0, 500.0], dtype=np.float32)
+    down = _make_upper_body_kpts(nose_y=292.0)   # 鼻子幾乎貼在肩線 (差 8px)
+    up = _make_upper_body_kpts(nose_y=190.0)
+
+    # 短暫低頭 (少於確認幀數) 後恢復 -> 不觸發
+    tid = 9201
+    for _ in range(analyzer.sleeping_confirm_frames - 1):
+        flags = analyzer._detect_abnormal_pose(down, bbox, 0.0, 0.0, tracking_id=tid)
+        assert PoseFlag.SLEEPING not in flags
+    flags = analyzer._detect_abnormal_pose(up, bbox, 0.0, 0.0, tracking_id=tid)
+    assert PoseFlag.SLEEPING not in flags
+
+    # 持續趴下 -> 於第 N 幀確認
+    tid = 9202
+    results = [
+        PoseFlag.SLEEPING in analyzer._detect_abnormal_pose(down, bbox, 0.0, 0.0, tracking_id=tid)
+        for _ in range(analyzer.sleeping_confirm_frames)
+    ]
+    assert results[:-1] == [False] * (analyzer.sleeping_confirm_frames - 1)
+    assert results[-1] is True
+
+    # 起身：連續 RELEASE 幀才解除 (中途仍維持趴睡，防閃爍)
+    for i in range(analyzer.sleeping_release_frames):
+        flags = analyzer._detect_abnormal_pose(up, bbox, 0.0, 0.0, tracking_id=tid)
+        expected = i < analyzer.sleeping_release_frames - 1
+        assert (PoseFlag.SLEEPING in flags) is expected
+
+    # 未提供 tracking_id 時不做時間濾波 (直接回傳單幀結果)
+    flags = analyzer._detect_abnormal_pose(down, bbox, 0.0, 0.0)
+    assert PoseFlag.SLEEPING in flags
+
+
+def test_head_pose_pitch_stable_when_turning_head():
+    """轉頭導致雙眼距離縮小時，俯仰角不可被放大成極端值。"""
+    kpts = np.zeros((17, 3), dtype=np.float32)
+    kpts[0] = [322.0, 232.0, 0.9]   # nose
+    kpts[1] = [315.0, 220.0, 0.9]   # left eye  (eye_dist = 10, 側臉)
+    kpts[2] = [325.0, 220.0, 0.9]   # right eye
+    kpts[5] = [260.0, 300.0, 0.9]   # shoulders (width 120)
+    kpts[6] = [380.0, 300.0, 0.9]
+    yaw, pitch, strategy, _ = estimate_head_pose(kpts, tracking_id=3)
+    assert strategy == 1
+    # 舊算法: (220-232)/10*60+20 = -52° (會被判趴睡)；新算法以肩寬穩定尺度，應遠小於此
+    assert pitch > -30.0
+    assert -90.0 <= pitch <= 90.0 and -90.0 <= yaw <= 90.0
+
+
 def test_cjk_unicode_drawing_and_action_labels():
     """Verify that Chinese posture labels and stats banners render without '????' artifacts."""
     from core.drawing import draw_text_bgr, draw_labels_bgr, sanitize_text_for_ascii
@@ -364,5 +449,11 @@ if __name__ == "__main__":
     print("  ✓ test_phase3_metric_batch_writer passed")
     test_cjk_unicode_drawing_and_action_labels()
     print("  ✓ test_cjk_unicode_drawing_and_action_labels passed")
+    test_sleeping_not_triggered_by_slight_head_motion()
+    print("  ✓ test_sleeping_not_triggered_by_slight_head_motion passed")
+    test_sleeping_requires_sustained_head_down_and_releases()
+    print("  ✓ test_sleeping_requires_sustained_head_down_and_releases passed")
+    test_head_pose_pitch_stable_when_turning_head()
+    print("  ✓ test_head_pose_pitch_stable_when_turning_head passed")
     print("\n🎉 ALL TESTS PASSED!")
 

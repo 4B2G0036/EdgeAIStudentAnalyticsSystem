@@ -82,9 +82,18 @@ def estimate_head_pose(
         # Pitch: in image coords y↓, so "looking down" means nose_y > eye_mid_y
         # Positive pitch = looking up (nose above eye midpoint in image space)
         # We add +20° baseline because cameras are typically mounted above students
-        pitch = ((eye_mid_y - nose[1]) / eye_dist) * 60.0 + 20.0
+        #
+        # 穩定化：轉頭時雙眼投影距離 (eye_dist) 會縮小，直接當分母會讓俯仰角被放大而
+        # 誤判低頭/趴睡。若雙肩可見，改以「肩寬比例」作為尺度下限，避免分母過小。
+        pitch_scale = eye_dist
+        if _valid(LEFT_SHOULDER) and _valid(RIGHT_SHOULDER):
+            shoulder_w = math.hypot(rsh[0] - lsh[0], rsh[1] - lsh[1])
+            pitch_scale = max(eye_dist, 0.22 * shoulder_w)
+        pitch = ((eye_mid_y - nose[1]) / pitch_scale) * 60.0 + 20.0
 
-        yaw, pitch = float(yaw), float(pitch)
+        # 限制合理範圍，避免關鍵點抖動產生極端數值
+        yaw = max(-90.0, min(90.0, float(yaw)))
+        pitch = max(-90.0, min(90.0, float(pitch)))
         is_looking = abs(yaw) <= _YAW_T and abs(pitch) <= _PITCH_T
         logger.debug("ID=%d  Strategy=1  yaw=%.1f  pitch=%.1f  looking=%s",
                      tracking_id, yaw, pitch, is_looking)

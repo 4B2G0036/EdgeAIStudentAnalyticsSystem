@@ -48,6 +48,7 @@
 18. **FastAPI Lifespan 上下文管理器與全域例外格式統一 (`api/main.py`)**: 淘汰已棄用的 `@app.on_event`，改採標準 `@asynccontextmanager async def lifespan` 統一調度資料庫與廣播器生命週期；註冊全域 `RequestValidationError` 與 unhandled exception handler，確保回傳標準 JSON 與追蹤 Trace-ID。
 19. **實時影像串流中文標註與動作判斷字型渲染修復 (`core/drawing.py`, `core/pose_analyzer.py`, `api/routers/stream.py`)**: 徹底解決 OpenCV 內建 `cv2.putText` 僅支援 ASCII 造成即時畫面頂部橫幅（人數、專注度）與學生標籤（趴睡、手機、分心、專注）呈現亂碼問號 (`?????`) 之限制。新增專用高效能 `core/drawing.py` 模組，透過 Pillow 載入作業系統 CJK 向量字型（Windows 微軟正黑體、Linux Noto Sans CJK、macOS PingFang）進行抗鋸齒 Unicode 中文字型渲染；實作單一轉換通道批次渲染，並在無中文字型環境下自動優雅降級為 ASCII 對照文字；學生姿態標籤全面標示 `[專注]`、`[分心]`、`[趴睡]`、`[手機]` 動作狀態，並增設標籤與頂部狀態列的邊界防碰撞位置自適應計算。
 20. **儀表板視訊來源純化與本機 WebCam 選項移除 (`dashboard/index.html`)**: 移除儀表板中本機 WebCam 來源切換選單、瀏覽器視訊鏡頭授權提示遮罩及客戶端定時上傳迴圈，全面純化收斂為「伺服器 AI 串流 (邊緣端)」單一模式；網頁載入與 API 自動重連時自動無縫掛載後端實時影像串流 (`/api/v1/stream`)，簡化操作體驗並防止使用者誤觸本機鏡頭導致串流斷開。
+21. **趴睡誤判修正 — 輕微低頭/轉頭不再被判為趴睡 (`core/pose_analyzer.py`, `core/head_pose.py`, `config.py`)**: 根因為 (a) 鼻-肩距離門檻 `SLEEPING_RATIO=0.20` 對近距離 WebCam 過於敏感；(b) 俯仰角以雙眼距離為分母，轉頭時眼距縮小使角度被放大超過 -45°；(c) 任一條件成立、單一影格即判定趴睡。修正：趴睡改為「主要證據 (鼻子貼近肩線，門檻降為 0.12) 或 (極端俯仰角 -60°/70° 且肩線嚴重傾斜 0.45)」；俯仰角以肩寬比例作為尺度下限並限制於 ±90°；新增每位學生的時間濾波 (連續 6 幀確認、連續 3 幀解除，約 1.2 秒)，上述參數皆可由 `.env` 調整 (`SLEEPING_*`)。新增 3 項回歸測試。
 
 ---
 ### 🤖 v0.9.0 — 邊緣 AI 視覺核心 (`core/`) 規格全面實作與驗證版本 (2026-10-22)
