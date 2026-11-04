@@ -294,6 +294,24 @@ def test_phase2_reports_and_realtime_streams():
     assert "timestamp" in payload
 
 
+def test_phase3_metric_batch_writer():
+    """Test Phase 3 MetricBatchWriter buffering, queue draining and graceful flush."""
+    from database.writer import MetricBatchWriter
+    writer = MetricBatchWriter(batch_size=10, flush_interval_s=10.0)
+    assert writer._queue.empty()
+    
+    # Queue multiple metrics
+    writer.write_metric("test-batch-001", 90.0, 5)
+    writer.write_metric("test-batch-001", 92.5, 5)
+    assert writer._queue.qsize() == 2
+    
+    # Flush drains queue
+    flushed = writer.flush()
+    assert writer._queue.empty()
+    assert flushed >= 0
+    writer.stop()
+
+
 if __name__ == "__main__":
     print("Running Edge AI Visual Core tests...")
     test_roi_polygon_filtering()
@@ -316,5 +334,7 @@ if __name__ == "__main__":
     print("  ✓ test_stream_broadcaster_and_worker_offload passed")
     test_phase2_reports_and_realtime_streams()
     print("  ✓ test_phase2_reports_and_realtime_streams passed")
+    test_phase3_metric_batch_writer()
+    print("  ✓ test_phase3_metric_batch_writer passed")
     print("\n🎉 ALL TESTS PASSED!")
 

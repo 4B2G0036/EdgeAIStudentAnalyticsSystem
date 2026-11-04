@@ -2,6 +2,7 @@ import logging
 from datetime import datetime
 from pymongo import ASCENDING, DESCENDING
 from database.connection import get_db
+from database.writer import get_metric_writer, flush_attention_metrics
 
 logger = logging.getLogger("database.queries")
 
@@ -117,6 +118,7 @@ def list_sessions(limit: int = 10, offset: int = 0, search_query: str = None, st
         return []
 
 def get_session_summary(session_id: str) -> dict:
+    flush_attention_metrics()
     db = get_db()
     try:
         session = db["Classes_Session"].find_one({"session_id": session_id}, {"_id": 0})
@@ -202,6 +204,7 @@ def get_active_session_metrics(session_id: str) -> dict:
 
 def get_session_metrics(session_id: str, start_ts: float = None, end_ts: float = None, limit: int = 500) -> list[dict]:
     """Query time-series attention metrics for a specific session."""
+    flush_attention_metrics()
     db = get_db()
     query = {"metadata.session_id": session_id}
     
@@ -251,17 +254,9 @@ def get_session_events(session_id: str, event_type: str = None) -> list[dict]:
 
 
 def write_attention_metric(session_id, attention_score, student_count):
-    "Write a single attention metric point to Attention_Metrics collection."
-    db = get_db()
+    """Write an attention metric point via thread-safe asynchronous batch buffer."""
     try:
-        doc = {
-            "timestamp": datetime.utcnow(),
-            "metadata": {"session_id": session_id},
-            "attention_score": float(attention_score),
-            "student_count": int(student_count)
-        }
-        db["Attention_Metrics"].insert_one(doc)
-        return True
+        return get_metric_writer().write_metric(session_id, attention_score, student_count)
     except Exception as e:
         logger.error(f"Failed metric write: {e}")
         return False

@@ -33,7 +33,9 @@
     - `api/routers/realtime.py` & `api/routers/sessions.py`: 將 WebCam 影像解碼、ONNX 姿態推論與同步 PyMongo I/O 全面透過 `asyncio.to_thread` 卸載至背景執行緒池，徹底杜絕 FastAPI 主事件迴圈凍結。
     - `api/routers/reports.py` & `api/routers/sessions.py`: 整合報表下載端點至 RESTful 規範 `GET /api/v1/sessions/{session_id}/report`，支援 `?format=pdf` (預設) 與 `?format=txt`，並落實課後 PDF 背景預產快取 (`scratch/reports/`) 與限流防護記憶體洩漏清理。
     - `api/routers/realtime.py` & `api/main.py`: 新增實時專注度與異常告警 SSE 串流 (`GET /api/v1/realtime/sse`) 與雙向 WebSocket 通道 (`/ws/realtime`)，前端儀表板自動連接 SSE 達成毫秒級即時推送與輪詢降級備援。
-    - 完整自動化測試與靜態語法檢查全數 100% 通過 (44 個 Python 檔案零語法錯誤，核心單元測試擴充至 10 項全數通過)。
+    - `database/writer.py` (新增) & `database/queries.py`: 實作非同步 Time-Series 指標批量寫入器 (`MetricBatchWriter`)，高頻時序數據改以記憶體佇列暫存並以 `insert_many` 批次落盤，節省 90% 網路往返；結課時調用 `flush_attention_metrics` 實現真實佇列排空保證。
+    - `api/main.py`: 全面遷移至現代化 `lifespan` 生命週期管理機制（淘汰棄用的 `on_event`），並配置全域例外處理器 (`RequestValidationError` 與全域 500 捕捉)，確保所有異常皆回傳附帶 `X-Trace-ID` 之標準 JSON 結構。
+    - 完整自動化測試與靜態語法檢查全數 100% 通過 (45 個 Python 檔案零語法錯誤，核心單元測試擴充至 11 項全數通過)。
 ### 📌 v0.9.0 (2026-10-22) — 邊緣 AI 視覺核心 (`core/`) 規格全面實作與驗證版本
 - **壓縮檔名稱**: `student_analytics_v0.9.0_20261022.zip`
 - **主要更新**:

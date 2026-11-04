@@ -111,6 +111,7 @@ async def end_active_session(session_id: str, background_tasks: BackgroundTasks)
         
     # 2. Trigger Queue Flush (AWAIT_QUEUE_FLUSH)
     logger.info(f"Triggering AWAIT_QUEUE_FLUSH for database writer queue. Timeout: 10s.")
+    await asyncio.to_thread(database.flush_attention_metrics)
     
     # 3. Update ended_at in DB
     try:

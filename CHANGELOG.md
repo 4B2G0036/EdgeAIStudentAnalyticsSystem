@@ -44,6 +44,8 @@
 14. **報表端點整合與課後 PDF 背景預產快取 (`api/routers/reports.py`, `api/routers/sessions.py`)**: 統一以 RESTful 路徑 `GET /api/v1/sessions/{session_id}/report` 提供下載服務（相容 `GET /api/v1/report/{session_id}`），支援 `?format=pdf` (預設) 與 `?format=txt`；結課時自動於背景預先編譯 PDF 檔並寫入快取，點擊下載即可零延遲回傳。
 15. **即時專注度與異常告警 SSE / WebSocket 通道 (`api/routers/realtime.py`, `dashboard/index.html`)**: 新增 Server-Sent Events 串流 (`GET /api/v1/realtime/sse`) 與雙向 WebSocket (`/ws/realtime`)；前端儀表板自動優先建立 SSE 即時連線接收推播更新，連線中斷自動退回定時輪詢，免除高頻 HTTP 請求負擔。
 16. **API 速率限制器記憶體過期清理 (`api/routers/reports.py`)**: 為 `SimpleRateLimiter` 引入滑動過期淘汰機制，定期回收已不在時間視窗內的客戶端 IP，防止長期運行下的記憶體無界膨脹。
+17. **Time-Series 指標非同步批量寫入緩衝區 (`database/writer.py`)**: 實作 `MetricBatchWriter` 記憶體緩衝佇列，以 15 筆或 2 秒週期批次寫入 (`insert_many`)，降低高達 90% 瑣碎網路 Round-Trip 與磁碟 I/O，並落實結課時的 `AWAIT_QUEUE_FLUSH` 排空保證。
+18. **FastAPI Lifespan 上下文管理器與全域例外格式統一 (`api/main.py`)**: 淘汰已棄用的 `@app.on_event`，改採標準 `@asynccontextmanager async def lifespan` 統一調度資料庫與廣播器生命週期；註冊全域 `RequestValidationError` 與 unhandled exception handler，確保回傳標準 JSON 與追蹤 Trace-ID。
 
 ---
 ### 🤖 v0.9.0 — 邊緣 AI 視覺核心 (`core/`) 規格全面實作與驗證版本 (2026-10-22)

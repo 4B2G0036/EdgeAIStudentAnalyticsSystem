@@ -1,6 +1,7 @@
 # database module
 from database.connection import get_db, get_db_client
 from database.collections import initialize_database
+from database.writer import get_metric_writer, flush_attention_metrics
 from database.queries import (
     create_session,
     end_session,
@@ -14,7 +15,8 @@ from database.queries import (
     get_session_metrics,
     get_session_events,
     write_attention_metric,
-    write_abnormal_event
+    write_abnormal_event,
+    close_abnormal_event
 )
 
 
