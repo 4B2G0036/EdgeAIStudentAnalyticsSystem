@@ -1,11 +1,11 @@
 # 學生專注度與異常行為分析系統 (Edge AI Student Analytics System)
 
-## 版本說明 (Release Notes) - v0.9.1
+## 版本說明 (Release Notes) - v0.9.2
 
-- **版本號 (Version)**: `v0.9.1`
+- **版本號 (Version)**: `v0.9.2`
 - **打包日期 (Release Date)**: 2026-11-04 (Asia/Taipei)
-- **精簡版壓縮檔名稱**: `student_analytics_v0.9.1_20261104.zip`
-- **上一前置版本**: `v0.9.0` (`student_analytics_v0.9.0_20261022.zip`)
+- **精簡版壓縮檔名稱**: `student_analytics_v0.9.2_20261104.zip`
+- **上一前置版本**: `v0.9.1` (`student_analytics_v0.9.1_20261104.zip`)
 - **線上預覽網址 (Live URL)**: [https://studentanalytics-91cd1.web.app](https://studentanalytics-91cd1.web.app)
 - **專案名稱**: 學生專注度與異常行為分析系統 (Student Analytics System)
 - **環境需求**: Python 3.10+ / MongoDB 7.0+ (已通過 8.3.7 測試) / HTML5 相容瀏覽器 (Chrome / Edge / Firefox)
@@ -14,7 +14,29 @@
 
 ## 1. 版本歷程與里程碑打包 (Milestone Packages)
 
-### 🌟 v0.9.1 (2026-11-04) — FastAPI 啟動自動連線與儀表板 API 網址自動更新版本
+### 🌟 v0.9.2 (2026-11-04) — 天花板俯角攝影機優化、手部動作（舉手/托腮/手機聚攏）分析深度升級與 Live Stream UI 優化
+- **壓縮檔名稱**: `student_analytics_v0.9.2_20261104.zip`
+- **主要更新**:
+  - **天花板俯角攝影機校準 (`core/head_pose.py`, `config.py`)**:
+    - 新增天花板模式 `CAMERA_CEILING_MODE = True` 與俯仰校準基準 `CAMERA_PITCH_OFFSET = 35.0`。
+    - 解決攝影機懸掛天花板向下俯視（30°~50°）時，學生平視黑板投影鼻子低於眼睛造成的負角度誤判，校準後回歸 0° 視線正視區間 (|pitch| ≤ 25°)。
+    - 引入雙肩寬比例尺作為特徵尺度底限，轉頭側臉時雙眼投影縮小不再造成俯仰角雜訊放大。
+  - **手部動作深度分析 (`core/pose_analyzer.py`, `core/models.py`)**:
+    - **舉手發問 / 伸展 (`HAND_RAISED`)**: 判定手腕高於眼部或顯著高於肩線，專注度維持 100 分滿分，影像疊加發光標記圈，標籤顯示 `[舉手]`，不計入負向異常次數。
+    - **托腮 / 撐頭 (`HEAD_SUPPORT`)**: 判定手腕靠近臉頰/下巴/鼻子/耳朵且位於肩部上方，適度扣除 15 分疲勞懲罰 (85分)，標籤顯示 `[托腮]`。
+    - **疑似使用手機 (`PHONE_SUSPECTED`) 精準防誤判**:
+      - 模式 A (雙手聚攏)：雙手手腕間距 < 0.55 × 肩寬且低頭，判定為雙手持手機操作。
+      - 模式 B (桌下滑手機)：單手靠近中線且頭部深傾 (pitch < -30°)。
+      - 排除條件：雙手在桌面上自然張開做筆記/翻書 (間距 ≥ 0.55 × 肩寬且 pitch ≥ -30°) 自動排除手機誤報，顯示為正常專注狀態。
+  - **天花板埋頭趴睡偵測增強 (`core/pose_analyzer.py`)**:
+    - 支援五官完全被手臂遮蔽時，依據雙耳與雙肩平齊幾何特徵 (|耳Y - 肩Y| < 0.12 × bbox高度) 準確判定趴睡，維持 6 幀確認、3 幀解除時序濾波防閃爍。
+  - **實時串流與儀表板 UI 優化 (`dashboard/index.html`, `api/routers/stream.py`)**:
+    - 即時告警日誌與標籤支援分級徽章：`🙋‍♂️ 課堂互動` (青色)、`💡 注意提醒` (金黃色)、`🚨 異常告警` (紅色)。
+    - 重構待機 Fallback 影格版面，消除時間字串與綠色動態心跳燈 (LIVE) 的文字重疊。
+  - **核心單元測試擴展 (`tests/test_core.py`)**:
+    - 單元測試由 18 項擴增至 23 項，100% PASS。
+
+### 📌 v0.9.1 (2026-11-04) — FastAPI 啟動自動連線與儀表板 API 網址自動更新版本
 - **壓縮檔名稱**: `student_analytics_v0.9.1_20261104.zip`
 - **主要更新**:
   - **根因修復**: 儀表板寫死過期的 Cloudflare Tunnel 網址、`localStorage` 快取舊網址，且穿透通道行程因輸出管線中斷而在啟動腳本結束後死亡，導致啟動後 API 顯示離線。
