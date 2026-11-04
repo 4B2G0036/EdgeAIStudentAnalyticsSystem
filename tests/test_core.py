@@ -258,6 +258,42 @@ def test_stream_broadcaster_and_worker_offload():
     assert "attention_score" in res
 
 
+def test_phase2_reports_and_realtime_streams():
+    """Test Phase 2 unified report generation and SSE/WebSocket realtime payload structure."""
+    import asyncio
+    from api.routers.reports import _render_pdf_report, _render_text_report
+    from api.routers.realtime import get_current_realtime_payload
+    
+    dummy_summary = {
+        "class_name": "測試課程",
+        "teacher": "林教授",
+        "started_at": "2026-11-04T00:00:00",
+        "ended_at": "2026-11-04T01:00:00",
+        "max_student_count": 25,
+        "avg_attention_score": 88.5,
+        "total_abnormal_events": 2
+    }
+    
+    # 1. Verify text report generator
+    txt_bytes = _render_text_report("test-sess-001", dummy_summary, "2026-11-04T00:00:00", "2026-11-04T01:00:00")
+    assert isinstance(txt_bytes, bytes)
+    assert "測試課程" in txt_bytes.decode("utf-8")
+    assert "88.5%" in txt_bytes.decode("utf-8")
+    
+    # 2. Verify PDF report generator
+    pdf_bytes = _render_pdf_report("test-sess-001", dummy_summary, "2026-11-04T00:00:00", "2026-11-04T01:00:00")
+    assert isinstance(pdf_bytes, bytes)
+    assert pdf_bytes.startswith(b"%PDF")
+    
+    # 3. Verify realtime telemetry payload generator
+    payload = asyncio.run(get_current_realtime_payload())
+    assert isinstance(payload, dict)
+    assert "attention_score" in payload
+    assert "active_student_count" in payload
+    assert "latest_event" in payload
+    assert "timestamp" in payload
+
+
 if __name__ == "__main__":
     print("Running Edge AI Visual Core tests...")
     test_roi_polygon_filtering()
@@ -278,5 +314,7 @@ if __name__ == "__main__":
     print("  ✓ test_inference_engine_execution passed")
     test_stream_broadcaster_and_worker_offload()
     print("  ✓ test_stream_broadcaster_and_worker_offload passed")
+    test_phase2_reports_and_realtime_streams()
+    print("  ✓ test_phase2_reports_and_realtime_streams passed")
     print("\n🎉 ALL TESTS PASSED!")
 

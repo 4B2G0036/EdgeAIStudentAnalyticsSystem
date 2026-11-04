@@ -31,7 +31,9 @@
     - `api/routers/reports.py`: PDF 報表生成防禦性升級，捕獲字型/緩衝區編碼例外並優雅降級為純文字報告，防止 500 錯誤。
     - `api/routers/stream.py`: 建立 Thread-safe 單一生產者影格廣播器 (`StreamBroadcaster`)，多用戶觀看影像串流共享推論與擷取結果，零觀看時背景自動休眠，防止 CPU 重複推論與攝影機硬體搶佔。
     - `api/routers/realtime.py` & `api/routers/sessions.py`: 將 WebCam 影像解碼、ONNX 姿態推論與同步 PyMongo I/O 全面透過 `asyncio.to_thread` 卸載至背景執行緒池，徹底杜絕 FastAPI 主事件迴圈凍結。
-    - 完整自動化測試與靜態語法檢查全數 100% 通過 (44 個 Python 檔案零語法錯誤，核心單元測試擴充至 9 項全數通過)。
+    - `api/routers/reports.py` & `api/routers/sessions.py`: 整合報表下載端點至 RESTful 規範 `GET /api/v1/sessions/{session_id}/report`，支援 `?format=pdf` (預設) 與 `?format=txt`，並落實課後 PDF 背景預產快取 (`scratch/reports/`) 與限流防護記憶體洩漏清理。
+    - `api/routers/realtime.py` & `api/main.py`: 新增實時專注度與異常告警 SSE 串流 (`GET /api/v1/realtime/sse`) 與雙向 WebSocket 通道 (`/ws/realtime`)，前端儀表板自動連接 SSE 達成毫秒級即時推送與輪詢降級備援。
+    - 完整自動化測試與靜態語法檢查全數 100% 通過 (44 個 Python 檔案零語法錯誤，核心單元測試擴充至 10 項全數通過)。
 ### 📌 v0.9.0 (2026-10-22) — 邊緣 AI 視覺核心 (`core/`) 規格全面實作與驗證版本
 - **壓縮檔名稱**: `student_analytics_v0.9.0_20261022.zip`
 - **主要更新**:

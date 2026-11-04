@@ -1,11 +1,13 @@
 import time
+import json
 import asyncio
 import logging
 import numpy as np
 import cv2
 from datetime import datetime
 from typing import Optional, List, Tuple
-from fastapi import APIRouter, File, UploadFile, Request, HTTPException, status
+from fastapi import APIRouter, File, UploadFile, Request, WebSocket, WebSocketDisconnect, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 import database
@@ -49,6 +51,59 @@ class RealtimeMetricsResponse(BaseModel):
     latest_event: str = Field("", description="最新觸發之異常告警描述")
     timestamp: str = Field(..., description="指標數據時間戳記 (ISO 8601)")
 
+async def get_current_realtime_payload() -> dict:
+    """Helper function to aggregate current in-memory live state and database session metrics."""
+    now_iso = datetime.utcnow().isoformat()
+    try:
+        active_session = await asyncio.to_thread(database.get_active_session)
+        is_live_fresh = (time.time() - _live_state["last_updated"]) < 10.0
+        
+        if not active_session:
+            return {
+                "is_active": False,
+                "session_id": None,
+                "class_name": None,
+                "teacher": None,
+                "attention_score": _live_state["attention_score"] if is_live_fresh else 100.0,
+                "active_student_count": _live_state["active_student_count"] if is_live_fresh else 0,
+                "total_abnormal_events": _live_state["total_abnormal_events"],
+                "latest_event": _live_state["latest_event"] if is_live_fresh else "尚未開啟課程 (鏡頭待命)",
+                "timestamp": now_iso
+            }
+            
+        session_id = active_session["session_id"]
+        live_metrics = (await asyncio.to_thread(database.get_active_session_metrics, session_id)) or {}
+        
+        current_score = _live_state["attention_score"] if is_live_fresh else float(live_metrics.get("attention_score", 100.0))
+        current_count = _live_state["active_student_count"] if is_live_fresh else int(live_metrics.get("student_count", 0))
+        current_event = _live_state["latest_event"] if is_live_fresh else live_metrics.get("latest_event", "")
+        
+        return {
+            "is_active": True,
+            "session_id": session_id,
+            "class_name": active_session.get("class_name"),
+            "teacher": active_session.get("teacher"),
+            "attention_score": float(current_score),
+            "active_student_count": int(current_count),
+            "total_abnormal_events": int(live_metrics.get("total_abnormal_events", 0)) + _live_state["total_abnormal_events"],
+            "latest_event": current_event,
+            "timestamp": now_iso
+        }
+    except Exception as e:
+        logger.error(f"Error reading realtime metrics: {e}")
+        return {
+            "is_active": False,
+            "session_id": None,
+            "class_name": None,
+            "teacher": None,
+            "attention_score": 100.0,
+            "active_student_count": 0,
+            "total_abnormal_events": 0,
+            "latest_event": f"讀取異常: {str(e)}",
+            "timestamp": now_iso
+        }
+
+
 @router.get(
     "/realtime",
     response_model=RealtimeMetricsResponse,
@@ -56,59 +111,100 @@ class RealtimeMetricsResponse(BaseModel):
     description="供儀表板每 3 秒輪詢獲取當前進行中 Session 或實時鏡頭之即時專注度、學生人數與最新告警。"
 )
 async def get_global_realtime_metrics():
-    now_iso = datetime.utcnow().isoformat()
-    try:
-        active_session = await asyncio.to_thread(database.get_active_session)
+    payload = await get_current_realtime_payload()
+    return RealtimeMetricsResponse(**payload)
+
+
+@router.get(
+    "/realtime/sse",
+    summary="實時專注度與警報 SSE 串流 (Server-Sent Events)",
+    description="瀏覽器使用 EventSource 連線，伺服器主動推送最新專注度、在線人數與即時異常告警，附帶心跳保活。"
+)
+async def realtime_sse_stream(request: Request):
+    async def event_generator():
+        last_sent_score = None
+        last_sent_count = None
+        last_sent_event = None
+        last_heartbeat = time.time()
         
-        # Check if we have recent live AI inference in memory
-        is_live_fresh = (time.time() - _live_state["last_updated"]) < 10.0
-        
-        if not active_session:
-            # Even when no session is formally created, return live camera analytics
-            return RealtimeMetricsResponse(
-                is_active=False,
-                session_id=None,
-                class_name=None,
-                teacher=None,
-                attention_score=_live_state["attention_score"] if is_live_fresh else 100.0,
-                active_student_count=_live_state["active_student_count"] if is_live_fresh else 0,
-                total_abnormal_events=_live_state["total_abnormal_events"],
-                latest_event=_live_state["latest_event"] if is_live_fresh else "尚未開啟課程 (鏡頭待命)",
-                timestamp=now_iso
+        while True:
+            if await request.is_disconnected():
+                logger.info("SSE client disconnected.")
+                break
+                
+            now = time.time()
+            data = await get_current_realtime_payload()
+            
+            has_changed = (
+                data["attention_score"] != last_sent_score or
+                data["active_student_count"] != last_sent_count or
+                data["latest_event"] != last_sent_event or
+                (now - last_heartbeat) >= 2.0
             )
             
-        session_id = active_session["session_id"]
-        live_metrics = (await asyncio.to_thread(database.get_active_session_metrics, session_id)) or {}
-        
-        # Blend in-memory live inference if available
-        current_score = _live_state["attention_score"] if is_live_fresh else float(live_metrics.get("attention_score", 100.0))
-        current_count = _live_state["active_student_count"] if is_live_fresh else int(live_metrics.get("student_count", 0))
-        current_event = _live_state["latest_event"] if is_live_fresh else live_metrics.get("latest_event", "")
-        
-        return RealtimeMetricsResponse(
-            is_active=True,
-            session_id=session_id,
-            class_name=active_session.get("class_name"),
-            teacher=active_session.get("teacher"),
-            attention_score=float(current_score),
-            active_student_count=int(current_count),
-            total_abnormal_events=int(live_metrics.get("total_abnormal_events", 0)) + _live_state["total_abnormal_events"],
-            latest_event=current_event,
-            timestamp=now_iso
-        )
+            if has_changed:
+                last_sent_score = data["attention_score"]
+                last_sent_count = data["active_student_count"]
+                last_sent_event = data["latest_event"]
+                last_heartbeat = now
+                payload_json = json.dumps(data, ensure_ascii=False)
+                yield f"data: {payload_json}\n\n"
+            elif (now - last_heartbeat) >= 15.0:
+                last_heartbeat = now
+                yield ": keepalive\n\n"
+                
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@router.websocket("/ws/realtime")
+async def websocket_realtime_endpoint(websocket: WebSocket):
+    """WebSocket 双向即時專注度與異常警報通訊端點。"""
+    await websocket.accept()
+    logger.info("WebSocket client connected to /api/v1/ws/realtime")
+    last_sent_score = None
+    last_sent_count = None
+    last_sent_event = None
+    last_push = time.time()
+    
+    try:
+        while True:
+            now = time.time()
+            data = await get_current_realtime_payload()
+            
+            has_changed = (
+                data["attention_score"] != last_sent_score or
+                data["active_student_count"] != last_sent_count or
+                data["latest_event"] != last_sent_event or
+                (now - last_push) >= 2.0
+            )
+            
+            if has_changed:
+                last_sent_score = data["attention_score"]
+                last_sent_count = data["active_student_count"]
+                last_sent_event = data["latest_event"]
+                last_push = now
+                await websocket.send_json(data)
+                
+            try:
+                msg = await asyncio.wait_for(websocket.receive_text(), timeout=0.5)
+                if msg == "ping":
+                    await websocket.send_text("pong")
+            except asyncio.TimeoutError:
+                pass
+    except WebSocketDisconnect:
+        logger.info("WebSocket client disconnected from /api/v1/ws/realtime")
     except Exception as e:
-        logger.error(f"Error serving realtime metrics endpoint: {e}")
-        return RealtimeMetricsResponse(
-            is_active=False,
-            session_id=None,
-            class_name=None,
-            teacher=None,
-            attention_score=100.0,
-            active_student_count=0,
-            total_abnormal_events=0,
-            latest_event=f"讀取異常: {str(e)}",
-            timestamp=now_iso
-        )
+        logger.warning(f"WebSocket connection closed: {e}")
 
 
 def _process_webcam_frame_sync(body: bytes) -> Tuple[Optional[dict], Optional[str]]:

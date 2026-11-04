@@ -805,7 +805,10 @@ function applyApiResult(res) {
   apiState.latency = res.latency;
   renderApiStatus(res.data.status === 'healthy' ? 'online' : 'degraded');
   if (changed && wasOnline) toast(`已自動切換至最新 API: ${API}`, 'success');
-  if (!wasOnline || changed) refreshData();  // 離線→上線或網址更新時自動刷新資料
+  if (!wasOnline || changed) {
+    refreshData();  // 離線→上線或網址更新時自動刷新資料
+    initHudStream(); // 初始化即時 SSE 串流
+  }
 }
 
 /** 重新探索所有候選網址並連線至優先順序最高且在線者 */
@@ -1680,6 +1683,33 @@ async function pollHud() {
     if (heartbeatDot) heartbeatDot.className = 'status-dot offline';
     if (heartbeatText) heartbeatText.textContent = 'API 連線中斷';
   }
+}
+
+let hudEventSource = null;
+function initHudStream() {
+  if (hudEventSource) {
+    try { hudEventSource.close(); } catch(e) {}
+    hudEventSource = null;
+  }
+  if (!API || typeof EventSource === 'undefined') return;
+  try {
+    hudEventSource = new EventSource(`${API}/api/v1/realtime/sse`);
+    hudEventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (activeSource !== 'webcam' || !localStream) {
+          updateHudUI(data.attention_score, data.active_student_count, data.latest_event);
+        }
+      } catch(e) {}
+    };
+    hudEventSource.onerror = () => {
+      // On error/disconnect, close and let regular pollHud fallback handle updates
+      if (hudEventSource) {
+        try { hudEventSource.close(); } catch(e) {}
+        hudEventSource = null;
+      }
+    };
+  } catch(e) {}
 }
 
 /* ── REFRESH ALL ────────────────── */

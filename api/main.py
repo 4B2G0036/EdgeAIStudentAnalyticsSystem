@@ -72,6 +72,11 @@ app.include_router(realtime.router)
 app.include_router(reports.router)
 app.include_router(system.router)
 
+# WebSocket root path alias
+@app.websocket("/ws/realtime")
+async def root_websocket_realtime(websocket: realtime.WebSocket):
+    await realtime.websocket_realtime_endpoint(websocket)
+
 
 
 def self_heal_abnormal_events():

@@ -4,7 +4,7 @@ import io
 import asyncio
 from datetime import datetime
 from typing import Optional, List
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, status
+from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -118,7 +118,7 @@ async def end_active_session(session_id: str, background_tasks: BackgroundTasks)
         
         # 4. Trigger PDF Report generation asynchronously via BackgroundTasks
         logger.info(f"Triggering background task to generate PDF report for session {session_id}.")
-        background_tasks.add_task(dummy_generate_report_task, session_id)
+        background_tasks.add_task(generate_and_cache_report_task, session_id)
         
         return {
             "status": "ended",
@@ -242,47 +242,16 @@ async def update_session_metadata(session_id: str, payload: SessionUpdate):
 
 @router.get(
     "/{session_id}/report",
-    summary="下載課程 PDF/文本 報告",
-    description="依課程 UUID 產生並下載該門課程的摘要統計文字報告。"
+    summary="下載課程 PDF / 文本 報告 (受速率限制)",
+    description="依課程 UUID 下載該門課程的統計報告。可透過 format 參數指定格式 (預設 pdf，支援 txt)。"
 )
-async def download_session_report(session_id: str):
-    session = await asyncio.to_thread(database.get_session_by_id, session_id)
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="找不到該課程記錄"
-        )
-        
-    summary = await asyncio.to_thread(database.get_session_summary, session_id)
-    if not summary:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="找不到該課程統計摘要"
-        )
-        
-    started_str = summary["started_at"].isoformat() if hasattr(summary["started_at"], "isoformat") else str(summary["started_at"])
-    ended_str = summary["ended_at"].isoformat() if summary.get("ended_at") and hasattr(summary["ended_at"], "isoformat") else str(summary.get("ended_at", "進行中"))
-    
-    report_content = f"""學生專注度與異常行為分析系統 - 課程報告
-==================================================
-課程識別碼: {session_id}
-課程名稱: {summary.get('class_name')}
-授課教師: {summary.get('teacher')}
-開始時間: {started_str}
-結束時間: {ended_str}
---------------------------------------------------
-統計數據摘要:
-最大在線人數: {summary.get('max_student_count', 0)} 人
-班級平均專注度: {summary.get('avg_attention_score', 100.0)}%
-累積異常事件次數: {summary.get('total_abnormal_events', 0)} 次
-==================================================
-報告生成時間: {datetime.utcnow().isoformat()} (UTC)
-"""
-    buf = io.BytesIO(report_content.encode("utf-8"))
-    headers = {
-        'Content-Disposition': f'attachment; filename="report_{session_id[:8]}.txt"'
-    }
-    return StreamingResponse(buf, media_type="text/plain", headers=headers)
+async def download_session_report(
+    session_id: str, 
+    request: Request,
+    format: str = Query("pdf", pattern="^(pdf|txt)$", description="報告格式: pdf 或 txt")
+):
+    from api.routers.reports import build_session_report_response
+    return await build_session_report_response(session_id, request, format_type=format)
 
 @router.delete(
     "/{session_id}",
@@ -383,9 +352,12 @@ async def get_session_abnormal_events(
         
     return await asyncio.to_thread(database.get_session_events, session_id, event_type=type)
 
-async def dummy_generate_report_task(session_id: str):
+async def generate_and_cache_report_task(session_id: str):
     logger.info(f"[Background Task] Start generating PDF report for session: {session_id}")
-    import asyncio
-    await asyncio.sleep(2.0)
-    logger.info(f"[Background Task] PDF report generation completed for session: {session_id}")
+    try:
+        from api.routers.reports import pregenerate_session_report
+        await pregenerate_session_report(session_id)
+        logger.info(f"[Background Task] PDF report generation completed for session: {session_id}")
+    except Exception as e:
+        logger.warning(f"[Background Task] Failed pre-generating report for session {session_id}: {e}")
 

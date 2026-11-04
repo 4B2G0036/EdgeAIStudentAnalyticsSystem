@@ -41,6 +41,9 @@
 11. **全功能整合測試與語法檢驗套件 (`scripts/test_all_features.py`, `scripts/lint_and_check.py`)**: 支援 TestClient 記憶體回退測試與動態 Tunnel 狀態識別，44 個模組靜態程式碼檢查 0 錯誤 0 警告，單元測試通過率 100%。
 12. **FastAPI 非同步事件迴圈防阻塞優化 (`api/routers/realtime.py`, `api/routers/sessions.py`)**: 將 WebCam 影格解碼、CPU 密集型 YOLOv8-Pose 推論以及同步 PyMongo 資料庫讀寫全面遷移至 `asyncio.to_thread` 執行緒池，消除阻塞主 Event Loop 導致的請求延遲與掉幀。
 13. **MJPEG 單一生產者影格廣播器 (`api/routers/stream.py`)**: 實作 `StreamBroadcaster` (Pub-Sub Broadcaster)，多連線同時觀看串流時共享單次硬體擷取與 AI 姿態推論，無連線時自動進入 0% CPU 待命，杜絕攝影機搶佔並顯著降低多用戶存取時之伺服器負載。
+14. **報表端點整合與課後 PDF 背景預產快取 (`api/routers/reports.py`, `api/routers/sessions.py`)**: 統一以 RESTful 路徑 `GET /api/v1/sessions/{session_id}/report` 提供下載服務（相容 `GET /api/v1/report/{session_id}`），支援 `?format=pdf` (預設) 與 `?format=txt`；結課時自動於背景預先編譯 PDF 檔並寫入快取，點擊下載即可零延遲回傳。
+15. **即時專注度與異常告警 SSE / WebSocket 通道 (`api/routers/realtime.py`, `dashboard/index.html`)**: 新增 Server-Sent Events 串流 (`GET /api/v1/realtime/sse`) 與雙向 WebSocket (`/ws/realtime`)；前端儀表板自動優先建立 SSE 即時連線接收推播更新，連線中斷自動退回定時輪詢，免除高頻 HTTP 請求負擔。
+16. **API 速率限制器記憶體過期清理 (`api/routers/reports.py`)**: 為 `SimpleRateLimiter` 引入滑動過期淘汰機制，定期回收已不在時間視窗內的客戶端 IP，防止長期運行下的記憶體無界膨脹。
 
 ---
 ### 🤖 v0.9.0 — 邊緣 AI 視覺核心 (`core/`) 規格全面實作與驗證版本 (2026-10-22)
