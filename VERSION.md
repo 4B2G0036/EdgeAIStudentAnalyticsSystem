@@ -23,6 +23,7 @@
   - `scripts/watchdog.py` (新增): 背景守護，API 離線自動重啟、穿透通道失效自動重建並同步最新網址至雲端儀表板。
   - `scripts/deploy_server.py` / `scripts/generate_tunnel.py`: 串接上述模組；`--keep-alive` 可前景常駐。
   - `api/main.py`: 啟動時 MongoDB 連線重試 (6 次退避)、`/health` 新增 `api/version/started_at/uptime_seconds`、新增 Private Network Access 預檢標頭 (`Access-Control-Allow-Private-Network`)。
+  - `Cloudflare 具名 Tunnel (Named Tunnel)`: 支援透過 `.env` (`CLOUDFLARE_TUNNEL_TOKEN`, `TUNNEL_PUBLIC_URL`) 綁定固定網域，token 以環境變數隱蔽傳遞不外洩，未設定時自動優雅降級回 Quick Tunnel，並附單元測試 (`tests/test_named_tunnel.py`)。
 ### 📌 v0.9.0 (2026-10-22) — 邊緣 AI 視覺核心 (`core/`) 規格全面實作與驗證版本
 - **壓縮檔名稱**: `student_analytics_v0.9.0_20261022.zip`
 - **主要更新**:

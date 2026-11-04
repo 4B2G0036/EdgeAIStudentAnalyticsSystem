@@ -33,6 +33,7 @@
 3. **守護監控 (`scripts/watchdog.py`)**: 每 10 秒檢查 API、每 30 秒檢查穿透通道，失效時自動重啟/重建並同步最新網址 (`WATCHDOG_FIREBASE_DEPLOY=0` 可停用雲端同步)。
 4. **後端強化 (`api/main.py`)**: 啟動 DB 初始化 6 次退避重試；`/health` 新增 `api`、`version`、`started_at`、`uptime_seconds`；新增 `Access-Control-Allow-Private-Network` 預檢標頭，讓雲端 (https) 儀表板可連線本機 localhost。
 5. **啟動腳本**: `scripts/deploy_server.py` 與 `scripts/generate_tunnel.py` 串接新模組，支援 `--keep-alive` (前景常駐) 與 `--no-firebase`。
+6. **Cloudflare 具名 Tunnel (Named Tunnel)**: 新增固定自訂網域支援 (`CLOUDFLARE_TUNNEL_TOKEN`, `TUNNEL_PUBLIC_URL`)，支援斷線自動重連且不外洩 token，未設定時自動平滑退回 Quick Tunnel；附完整自動化測試 (`tests/test_named_tunnel.py`)。
 
 ---
 ### 🤖 v0.9.0 — 邊緣 AI 視覺核心 (`core/`) 規格全面實作與驗證版本 (2026-10-22)

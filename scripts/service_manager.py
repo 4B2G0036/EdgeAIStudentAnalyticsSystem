@@ -50,7 +50,39 @@ def get_python_bin():
     return venv_python if os.path.exists(venv_python) else sys.executable
 
 
-def spawn_detached(cmd, log_path, cwd=ROOT_DIR):
+def read_env_value(key, default=""):
+    """讀取設定值：優先環境變數，其次專案 .env (不依賴 python-dotenv，供啟動前期使用)"""
+    val = os.environ.get(key)
+    if val:
+        return val.strip()
+    try:
+        with open(ENV_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith(f"{key}=") and not line.startswith("#"):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return default
+
+
+def named_tunnel_config():
+    """
+    具名 Tunnel 設定 (Cloudflare Named Tunnel)。需同時設定於 .env：
+      CLOUDFLARE_TUNNEL_TOKEN  Zero Trust 後台建立 Tunnel 後取得的 token
+      TUNNEL_PUBLIC_URL        於該 Tunnel 設定的 Public Hostname，例如 https://api.example.com
+    兩者齊備回傳 (token, url)，否則回傳 None (自動退回免帳號的 Quick Tunnel)。
+    """
+    token = read_env_value("CLOUDFLARE_TUNNEL_TOKEN")
+    url = read_env_value("TUNNEL_PUBLIC_URL").rstrip("/")
+    if not token or not url:
+        return None
+    if not url.startswith("https://"):
+        url = "https://" + url.split("://")[-1]
+    return token, url
+
+
+def spawn_detached(cmd, log_path, cwd=ROOT_DIR, env=None):
     """
     以獨立行程群組啟動背景程序，標準輸出/錯誤寫入 log_path (不使用管線，避免父行程結束後管線中斷導致程序死亡)。
     Windows 下使用 CREATE_NO_WINDOW + CREATE_NEW_PROCESS_GROUP，關閉啟動用的終端機視窗後程序仍會持續運作。
@@ -61,6 +93,8 @@ def spawn_detached(cmd, log_path, cwd=ROOT_DIR):
     log_fp.flush()
 
     kwargs = {"cwd": cwd, "stdout": log_fp, "stderr": subprocess.STDOUT, "stdin": subprocess.DEVNULL}
+    if env:
+        kwargs["env"] = {**os.environ, **env}
     if sys.platform == "win32":
         kwargs["creationflags"] = _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW
     else:
@@ -158,6 +192,47 @@ def _tunnel_command():
     return [npx, "--yes", "cloudflared", "tunnel", "--url", f"http://localhost:{API_PORT}"]
 
 
+def _cloudflared_base():
+    """回傳啟動 cloudflared 的前綴指令 (優先本機安裝，其次 npx)"""
+    cloudflared = shutil.which("cloudflared")
+    if cloudflared:
+        return [cloudflared]
+    npx = shutil.which("npx.cmd") or shutil.which("npx")
+    return [npx, "--yes", "cloudflared"] if npx else None
+
+
+def start_named_tunnel(token, timeout=60):
+    """
+    啟動具名 Tunnel：token 以環境變數 TUNNEL_TOKEN 傳入 (不會出現在命令列、行程清單或日誌)。
+    以日誌出現 'Registered tunnel connection' 判定已向 Cloudflare 註冊成功。
+    回傳 (pid, error_message)；成功時 error_message 為 None。
+    """
+    base = _cloudflared_base()
+    if not base:
+        return None, "找不到 cloudflared 或 npx"
+
+    os.makedirs(SCRATCH_DIR, exist_ok=True)
+    offset = os.path.getsize(TUNNEL_LOG) if os.path.exists(TUNNEL_LOG) else 0
+    proc = spawn_detached(base + ["tunnel", "--no-autoupdate", "run"], TUNNEL_LOG, env={"TUNNEL_TOKEN": token})
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(1)
+        try:
+            with open(TUNNEL_LOG, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(offset)
+                content = f.read()
+        except Exception:
+            content = ""
+        if "Registered tunnel connection" in content:
+            return proc.pid, None
+        if proc.poll() is not None:
+            reason = [l for l in content.splitlines() if " ERR " in l or "error" in l.lower()][-1:] or ["cloudflared 已結束"]
+            return None, reason[0].strip()[-200:]
+    kill_process_tree(proc.pid)
+    return None, "等待註冊逾時"
+
+
 def start_tunnel(timeout=45):
     """
     啟動 Cloudflare Quick Tunnel (脫離父行程，日誌寫入 scratch/cloudflared.log)，
@@ -206,14 +281,35 @@ def ensure_tunnel(restart=False):
     """
     status = read_status()
     old_url, old_pid = status.get("tunnel_url"), status.get("pid")
+    named = named_tunnel_config()
 
-    if not restart and old_url and pid_alive(old_pid) and tunnel_healthy(old_url):
+    # 模式切換 (Quick <-> Named) 時不沿用舊通道
+    expected_engine = "Cloudflare Named Tunnel" if named else "Cloudflare Tunnel"
+    same_mode = status.get("engine") == expected_engine and (not named or old_url == named[1])
+
+    if not restart and same_mode and old_url and pid_alive(old_pid) and tunnel_healthy(old_url):
         log(f"  🟢 [沿用既有穿透通道] {old_url}")
-        publish_api_url(old_url, status.get("engine", "Cloudflare Tunnel"), old_pid)
+        publish_api_url(old_url, expected_engine, old_pid)
         return old_url
 
     if old_pid:
         kill_process_tree(old_pid)
+
+    if named:
+        token, public_url = named
+        for attempt in range(1, 4):
+            log(f"  🔐 正在連線 Cloudflare 具名 Tunnel -> {public_url} (第 {attempt}/3 次嘗試)...")
+            pid, err = start_named_tunnel(token)
+            if err:
+                log(f"  ⚠️ 具名 Tunnel 啟動失敗: {err}")
+                continue
+            if wait_tunnel_reachable(public_url, timeout=60):
+                log(f"  🟢 [具名 Tunnel 驗證通過] {public_url} (固定網址)")
+                publish_api_url(public_url, "Cloudflare Named Tunnel", pid)
+                return public_url
+            log("  ⚠️ 具名 Tunnel 已註冊但固定網址無法連回本機 API，請檢查 Public Hostname 是否指向 http://localhost:8000")
+            kill_process_tree(pid)
+        log("  🔴 具名 Tunnel 無法使用，退回 Quick Tunnel (臨時網址)")
 
     for attempt in range(1, 4):
         log(f"  📡 正在建立 Cloudflare Tunnel 穿透通道 (第 {attempt}/3 次嘗試)...")
