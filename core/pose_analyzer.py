@@ -29,6 +29,7 @@ from core.tracker import PersonTracker
 from core.privacy import apply_privacy_blur
 from core.head_pose import estimate_head_pose
 from core.roi import filter_persons_by_roi
+from core.drawing import draw_labels_bgr
 
 logger = logging.getLogger("core.pose_analyzer")
 
@@ -315,6 +316,7 @@ class PoseAnalyzer:
         if draw_overlay:
             # RULE: PII face blurring MUST happen BEFORE drawing labels/skeletons!
             blurred = apply_privacy_blur(frame, boxes_xyxy, keypoints)
+            label_items: list[dict] = []
 
             for i in range(num_dets):
                 person = tracked_persons[i]
@@ -366,7 +368,7 @@ class PoseAnalyzer:
                             cv2.LINE_AA,
                         )
 
-                # 4. Draw Label Tag with solid dark background
+                # 4. Prepare Label Tag with solid dark background
                 tag_label = f"S{tid:03d} | {int(score)}分"
                 if PoseFlag.SLEEPING in person.pose_flags:
                     tag_label += " [趴睡]"
@@ -374,20 +376,27 @@ class PoseAnalyzer:
                     tag_label += " [手機]"
                 elif PoseFlag.DISTRACTED in person.pose_flags:
                     tag_label += " [分心]"
+                else:
+                    tag_label += " [專注]"
 
-                label_y = max(24, by1 - 6)
-                (tw, th), _ = cv2.getTextSize(tag_label, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 2)
-                cv2.rectangle(blurred, (bx1, label_y - th - 4), (bx1 + tw + 8, label_y + 4), (20, 24, 33), -1)
-                cv2.putText(
-                    blurred,
-                    tag_label,
-                    (bx1 + 4, label_y),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.52,
-                    box_color,
-                    2,
-                    cv2.LINE_AA,
-                )
+                # Position label tag: place above bbox, or inside top if near frame/banner edge
+                if by1 >= 60:
+                    tag_org = (bx1, by1 - 22)
+                else:
+                    tag_org = (bx1 + 4, max(38, by1 + 4))
+
+                label_items.append({
+                    "text": tag_label,
+                    "org": tag_org,
+                    "font_size": 14,
+                    "color_bgr": box_color,
+                    "bg_color_bgr": (20, 24, 33),
+                    "padding": (5, 3),
+                    "bold": True,
+                })
+
+            if label_items:
+                draw_labels_bgr(blurred, label_items)
 
             annotated_frame = blurred
 

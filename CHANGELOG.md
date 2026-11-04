@@ -46,6 +46,7 @@
 16. **API 速率限制器記憶體過期清理 (`api/routers/reports.py`)**: 為 `SimpleRateLimiter` 引入滑動過期淘汰機制，定期回收已不在時間視窗內的客戶端 IP，防止長期運行下的記憶體無界膨脹。
 17. **Time-Series 指標非同步批量寫入緩衝區 (`database/writer.py`)**: 實作 `MetricBatchWriter` 記憶體緩衝佇列，以 15 筆或 2 秒週期批次寫入 (`insert_many`)，降低高達 90% 瑣碎網路 Round-Trip 與磁碟 I/O，並落實結課時的 `AWAIT_QUEUE_FLUSH` 排空保證。
 18. **FastAPI Lifespan 上下文管理器與全域例外格式統一 (`api/main.py`)**: 淘汰已棄用的 `@app.on_event`，改採標準 `@asynccontextmanager async def lifespan` 統一調度資料庫與廣播器生命週期；註冊全域 `RequestValidationError` 與 unhandled exception handler，確保回傳標準 JSON 與追蹤 Trace-ID。
+19. **實時影像串流中文標註與動作判斷字型渲染修復 (`core/drawing.py`, `core/pose_analyzer.py`, `api/routers/stream.py`)**: 徹底解決 OpenCV 內建 `cv2.putText` 僅支援 ASCII 造成即時畫面頂部橫幅（人數、專注度）與學生標籤（趴睡、手機、分心、專注）呈現亂碼問號 (`?????`) 之限制。新增專用高效能 `core/drawing.py` 模組，透過 Pillow 載入作業系統 CJK 向量字型（Windows 微軟正黑體、Linux Noto Sans CJK、macOS PingFang）進行抗鋸齒 Unicode 中文字型渲染；實作單一轉換通道批次渲染，並在無中文字型環境下自動優雅降級為 ASCII 對照文字；學生姿態標籤全面標示 `[專注]`、`[分心]`、`[趴睡]`、`[手機]` 動作狀態，並增設標籤與頂部狀態列的邊界防碰撞位置自適應計算。
 
 ---
 ### 🤖 v0.9.0 — 邊緣 AI 視覺核心 (`core/`) 規格全面實作與驗證版本 (2026-10-22)

@@ -312,6 +312,32 @@ def test_phase3_metric_batch_writer():
     writer.stop()
 
 
+def test_cjk_unicode_drawing_and_action_labels():
+    """Verify that Chinese posture labels and stats banners render without '????' artifacts."""
+    from core.drawing import draw_text_bgr, draw_labels_bgr, sanitize_text_for_ascii
+    
+    # 1. Verify ASCII sanitizer
+    sanitized = sanitize_text_for_ascii("人數: 1 | 專注度: 50分 [趴睡]")
+    assert "Students" in sanitized
+    assert "Attention" in sanitized
+    assert "SLEEPING" in sanitized
+    assert "人" not in sanitized
+    
+    # 2. Verify drawing onto frame
+    img = np.zeros((200, 400, 3), dtype=np.uint8)
+    draw_text_bgr(img, "[AI CORE LIVE] 人數: 2 | 專注度: 80分", (10, 10), font_size=14)
+    assert img.max() > 0
+    
+    # 3. Verify batch drawing with posture tags
+    items = [
+        {"text": "S001 | 100分 [專注]", "org": (10, 50), "color_bgr": (0, 230, 115), "bg_color_bgr": (20, 24, 33)},
+        {"text": "S002 | 50分 [分心]", "org": (10, 90), "color_bgr": (0, 204, 255), "bg_color_bgr": (20, 24, 33)},
+        {"text": "S003 | 20分 [趴睡]", "org": (10, 130), "color_bgr": (60, 60, 255), "bg_color_bgr": (20, 24, 33)},
+    ]
+    draw_labels_bgr(img, items)
+    assert img.max() > 0
+
+
 if __name__ == "__main__":
     print("Running Edge AI Visual Core tests...")
     test_roi_polygon_filtering()
@@ -336,5 +362,7 @@ if __name__ == "__main__":
     print("  ✓ test_phase2_reports_and_realtime_streams passed")
     test_phase3_metric_batch_writer()
     print("  ✓ test_phase3_metric_batch_writer passed")
+    test_cjk_unicode_drawing_and_action_labels()
+    print("  ✓ test_cjk_unicode_drawing_and_action_labels passed")
     print("\n🎉 ALL TESTS PASSED!")
 

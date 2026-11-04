@@ -14,6 +14,7 @@ import config
 import database
 from core.camera import CameraManager
 from core.pose_analyzer import PoseAnalyzer
+from core.drawing import draw_text_bgr
 from api.routers.realtime import update_live_state
 
 logger = logging.getLogger("api.routers.stream")
@@ -40,29 +41,25 @@ def generate_fallback_frame(text="攝影機串流傳輸中 (等待畫面)..."):
         
     # Draw header banner
     cv2.rectangle(img, (0, 0), (640, 45), (15, 22, 41), -1)
-    cv2.putText(img, "STUDENT ANALYTICS AI STREAM (LIVE 5 FPS)", (15, 30), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (99, 179, 237), 2, cv2.LINE_AA)
+    draw_text_bgr(img, "STUDENT ANALYTICS AI STREAM (LIVE 5 FPS)", (15, 12), font_size=15, color_bgr=(99, 179, 237), bold=True)
                 
     # Draw time string
     time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cv2.putText(img, f"TIME: {time_str}", (420, 30), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (136, 146, 176), 1, cv2.LINE_AA)
+    draw_text_bgr(img, f"TIME: {time_str}", (420, 14), font_size=13, color_bgr=(136, 146, 176), bold=False)
                 
     # Draw center box
     cv2.rectangle(img, (80, 100), (560, 380), (30, 40, 65), 2)
-    cv2.putText(img, "AI VISION CORE STREAM", (200, 220), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (232, 234, 246), 2, cv2.LINE_AA)
-    cv2.putText(img, text, (180, 260), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (79, 209, 199), 1, cv2.LINE_AA)
+    draw_text_bgr(img, "AI VISION CORE STREAM", (200, 215), font_size=20, color_bgr=(232, 234, 246), bold=True)
+    draw_text_bgr(img, text, (180, 260), font_size=15, color_bgr=(79, 209, 199), bold=True)
                 
     # Draw animated live indicator
     second = int(time.time())
     if second % 2 == 0:
-        cv2.circle(img, (530, 28), 6, (104, 211, 145), -1)
-        cv2.putText(img, "LIVE", (545, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (104, 211, 145), 1, cv2.LINE_AA)
+        cv2.circle(img, (530, 22), 6, (104, 211, 145), -1)
+        draw_text_bgr(img, "LIVE", (545, 14), font_size=13, color_bgr=(104, 211, 145), bold=True)
     else:
-        cv2.circle(img, (530, 28), 6, (74, 85, 104), -1)
-        cv2.putText(img, "LIVE", (545, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (136, 146, 176), 1, cv2.LINE_AA)
+        cv2.circle(img, (530, 22), 6, (74, 85, 104), -1)
+        draw_text_bgr(img, "LIVE", (545, 14), font_size=13, color_bgr=(136, 146, 176), bold=True)
 
     # Encode to JPEG
     ret, jpeg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 80])
@@ -186,8 +183,14 @@ class StreamBroadcaster:
                     cv2.rectangle(annotated_frame, (0, 0), (width, 35), (10, 14, 26), -1)
                     time_str = datetime.now().strftime("%H:%M:%S")
                     stats_str = f"人數: {count} | 專注度: {score:.0f}分 | {time_str}"
-                    cv2.putText(annotated_frame, f"[AI CORE LIVE] {stats_str}", (15, 24), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (79, 209, 199), 1, cv2.LINE_AA)
+                    draw_text_bgr(
+                        annotated_frame,
+                        f"[AI CORE LIVE] {stats_str}",
+                        (15, 8),
+                        font_size=14,
+                        color_bgr=(79, 209, 199),
+                        bold=True,
+                    )
 
                     ret, jpeg = cv2.imencode('.jpg', annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
                     if ret:
