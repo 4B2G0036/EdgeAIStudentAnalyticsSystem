@@ -588,6 +588,87 @@ def test_ceiling_buried_face_sleeping():
     assert PoseFlag.SLEEPING in flags
 
 
+def test_private_network_access_preflight():
+    """Verify Starlette CORSMiddleware + PNA middleware allow Private Network Access preflights."""
+    from fastapi.testclient import TestClient
+    from api.main import app
+
+    client = TestClient(app)
+    resp = client.options(
+        "/health",
+        headers={
+            "Origin": "https://studentanalytics-91cd1.web.app",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Private-Network": "true",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("access-control-allow-private-network") == "true"
+
+
+def test_cjk_pdf_report_generation_with_chart_and_events():
+    """Verify CJK TrueType font registration, vector chart rendering, and event table in PDF report."""
+    from api.routers.reports import _render_pdf_report, _render_text_report, _get_pdf_font_name
+
+    font_name = _get_pdf_font_name()
+    assert font_name in ("CJKFont", "Helvetica")
+
+    summary = {
+        "class_name": "深度學習與電腦視覺專論",
+        "teacher": "陳博士",
+        "room": "資工館 305",
+        "started_at": "2026-11-19T01:00:00",
+        "ended_at": "2026-11-19T02:30:00",
+        "max_student_count": 32,
+        "avg_attention_score": 84.6,
+        "min_attention_score": 62.0,
+        "max_attention_score": 98.0,
+        "total_abnormal_events": 3,
+    }
+    metrics = [
+        {"timestamp": "2026-11-19T01:05:00", "attention_score": 95.0, "student_count": 30},
+        {"timestamp": "2026-11-19T01:35:00", "attention_score": 76.0, "student_count": 32},
+        {"timestamp": "2026-11-19T02:15:00", "attention_score": 82.8, "student_count": 31},
+    ]
+    events = [
+        {"timestamp": "2026-11-19T01:40:12", "tracking_id": "S002", "event_type": "SLEEPING", "duration_seconds": 15.2},
+        {"timestamp": "2026-11-19T01:52:00", "tracking_id": "S005", "event_type": "HAND_RAISED", "duration_seconds": 6.0},
+    ]
+
+    pdf_bytes = _render_pdf_report(
+        "sess-cjk-test-001", summary, "2026-11-19T01:00:00", "2026-11-19T02:30:00", metrics=metrics, events=events
+    )
+    assert pdf_bytes.startswith(b"%PDF")
+    assert len(pdf_bytes) > 1500
+
+    txt_bytes = _render_text_report(
+        "sess-cjk-test-001", summary, "2026-11-19T01:00:00", "2026-11-19T02:30:00", metrics=metrics, events=events
+    )
+    txt_str = txt_bytes.decode("utf-8")
+    assert "深度學習與電腦視覺專論" in txt_str
+    assert "趴睡 (SLEEPING)" in txt_str
+    assert "系統自動教學與環境建議" in txt_str
+
+
+def test_roi_polygon_overlay_and_persister_roi():
+    """Verify PoseAnalyzer draws ROI polygon overlay and FrameResultPersister caches active roi_polygon."""
+    from api.persistence import FrameResultPersister
+
+    analyzer = PoseAnalyzer.get_instance()
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    roi = [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]]
+    res = analyzer.analyze_frame(frame, roi_polygon=roi, draw_overlay=True)
+    assert res["annotated_frame"] is not None
+    # Verify border polyline was drawn near top edge y = int(0.1 * 240) = 24
+    assert res["annotated_frame"][24, 160].max() > 0
+
+    persister = FrameResultPersister()
+    persister._roi_polygon = roi
+    persister._session_id = "mock-sid"
+    persister._session_checked_at = 9999999999.0
+    assert persister.get_active_roi_polygon() == roi
+
+
 if __name__ == "__main__":
     print("Running Edge AI Visual Core tests...")
     test_roi_polygon_filtering()
@@ -636,5 +717,11 @@ if __name__ == "__main__":
     print("  ✓ test_hand_action_phone_cluster_vs_writing passed")
     test_ceiling_buried_face_sleeping()
     print("  ✓ test_ceiling_buried_face_sleeping passed")
+    test_private_network_access_preflight()
+    print("  ✓ test_private_network_access_preflight passed")
+    test_cjk_pdf_report_generation_with_chart_and_events()
+    print("  ✓ test_cjk_pdf_report_generation_with_chart_and_events passed")
+    test_roi_polygon_overlay_and_persister_roi()
+    print("  ✓ test_roi_polygon_overlay_and_persister_roi passed")
     print("\n🎉 ALL TESTS PASSED!")
 

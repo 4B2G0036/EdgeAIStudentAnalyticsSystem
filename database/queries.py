@@ -117,6 +117,22 @@ def list_sessions(limit: int = 10, offset: int = 0, search_query: str = None, st
         logger.error(f"Error listing sessions: {e}")
         return []
 
+def update_session_max_students(session_id: str, student_count: int) -> bool:
+    """Update Classes_Session.student_count with the peak concurrent student count using $max."""
+    if not session_id or student_count <= 0:
+        return False
+    db = get_db()
+    try:
+        db["Classes_Session"].update_one(
+            {"session_id": session_id},
+            {"$max": {"student_count": int(student_count)}}
+        )
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to update max student count for {session_id}: {e}")
+        return False
+
+
 def get_session_summary(session_id: str) -> dict:
     flush_attention_metrics()
     db = get_db()
@@ -125,29 +141,43 @@ def get_session_summary(session_id: str) -> dict:
         if not session:
             return None
             
-        # Compile a basic summary from Attention_Metrics and Abnormal_Events
-        # 1. Total anomalies count
-        anomalies_count = db["Abnormal_Events"].count_documents({"session_id": session_id})
+        # Compile summary from Attention_Metrics and Abnormal_Events
+        # 1. Total negative anomalies count (excluding positive HAND_RAISED interactions)
+        anomalies_count = db["Abnormal_Events"].count_documents({
+            "session_id": session_id,
+            "event_type": {"$not": {"$regex": "HAND_RAISED"}}
+        })
         
-        # 2. Query average attention score from Attention_Metrics
-        # Time-series collection aggregation
+        # 2. Query average attention score and peak student count from Attention_Metrics
         pipeline = [
             {"$match": {"metadata.session_id": session_id}},
             {"$group": {
                 "_id": None,
-                "avg_score": {"$avg": "$attention_score"}
+                "avg_score": {"$avg": "$attention_score"},
+                "max_students": {"$max": "$student_count"},
+                "min_score": {"$min": "$attention_score"},
+                "max_score": {"$max": "$attention_score"},
             }}
         ]
         agg_result = list(db["Attention_Metrics"].aggregate(pipeline))
         avg_score = agg_result[0]["avg_score"] if agg_result else 100.0
+        agg_max_students = int(agg_result[0].get("max_students") or 0) if agg_result else 0
+        stored_students = int(session.get("student_count", 0) or 0)
+        max_student_count = max(stored_students, agg_max_students)
+
+        # Backfill Classes_Session.student_count if metrics recorded a higher peak
+        if max_student_count > stored_students:
+            update_session_max_students(session_id, max_student_count)
         
         return {
             "session_id": session_id,
             "class_name": session.get("class_name"),
             "teacher": session.get("teacher"),
+            "room": session.get("room", ""),
+            "notes": session.get("notes", ""),
             "started_at": session.get("started_at"),
             "ended_at": session.get("ended_at"),
-            "max_student_count": session.get("student_count", 0),
+            "max_student_count": max_student_count,
             "avg_attention_score": round(avg_score, 2) if avg_score is not None else 100.0,
             "total_abnormal_events": anomalies_count
         }

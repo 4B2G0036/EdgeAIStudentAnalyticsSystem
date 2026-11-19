@@ -9,12 +9,13 @@ from contextlib import asynccontextmanager
 # Ensure current directory is in sys.path
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
+import inspect
 import uuid
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse, JSONResponse, Response
 from fastapi.exceptions import RequestValidationError
 import config
 import database
@@ -129,14 +130,16 @@ class TraceIDMiddleware(BaseHTTPMiddleware):
 app.add_middleware(TraceIDMiddleware)
 
 # CORS configuration - Allow all web origins (localhost, Cloudflare Tunnel, Firebase Hosting)
-app.add_middleware(
-    CORSMiddleware,
+_cors_kwargs = dict(
     allow_origins=["*"],
     allow_origin_regex=r"^https?://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+if "allow_private_network" in inspect.signature(CORSMiddleware.__init__).parameters:
+    _cors_kwargs["allow_private_network"] = True
+app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
 
 @app.middleware("http")
@@ -146,8 +149,22 @@ async def private_network_access_middleware(request: Request, call_next):
     Access-Control-Request-Private-Network，伺服器須回應 Access-Control-Allow-Private-Network: true。
     此 middleware 位於 CORS 之外層，確保預檢回應一定帶有該標頭。
     """
+    is_pna = request.headers.get("access-control-request-private-network", "").lower() == "true"
+    if request.method == "OPTIONS" and is_pna and "access-control-request-method" not in request.headers:
+        origin = request.headers.get("origin", "*")
+        return Response(
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Allow-Methods": "*",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Private-Network": "true",
+                "Vary": "Origin",
+            },
+        )
     response = await call_next(request)
-    if request.headers.get("access-control-request-private-network", "").lower() == "true":
+    if is_pna:
         response.headers["Access-Control-Allow-Private-Network"] = "true"
     return response
 

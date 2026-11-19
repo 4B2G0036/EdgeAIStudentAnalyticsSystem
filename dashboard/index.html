@@ -462,6 +462,20 @@
                 <div style="font-size:1.6rem; font-weight:700; color:var(--accent-cyan);" id="hud-students">0 人</div>
               </div>
             </div>
+
+            <!-- LIVE ROLLING SPARKLINE & DROP WARNING -->
+            <div style="margin-top:0.85rem; background:rgba(0,0,0,0.18); border:1px solid rgba(255,255,255,0.05); border-radius:8px; padding:0.55rem 0.75rem;">
+              <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.7rem; color:var(--text-muted); margin-bottom:4px;">
+                <span>📈 即時專注度趨勢 (近 30 次採樣)</span>
+                <span id="hud-trend-badge" style="color:var(--accent-green); font-weight:600;">● 穩定</span>
+              </div>
+              <div id="hud-sparkline-box" style="height:38px; width:100%; display:flex; align-items:center;">
+                <svg width="100%" height="36" viewBox="0 0 240 36" preserveAspectRatio="none">
+                  <line x1="0" y1="18" x2="240" y2="18" stroke="rgba(255,255,255,0.07)" stroke-dasharray="3,3" />
+                  <polyline id="hud-sparkline-poly" fill="none" stroke="var(--accent-cyan)" stroke-width="2" points="0,4 240,4" />
+                </svg>
+              </div>
+            </div>
           </div>
 
           <!-- REAL-TIME ALERT LOG -->
@@ -513,9 +527,24 @@
               <input id="teacher" class="form-control" type="text" placeholder="例如：張教授" required />
             </div>
           </div>
-          <div class="form-group">
-            <label class="form-label" for="room">教室編號</label>
-            <input id="room" class="form-control" type="text" placeholder="例如：資工館 301" />
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="room">教室編號</label>
+              <input id="room" class="form-control" type="text" placeholder="例如：資工館 301" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="roi_preset">🎯 座位區 ROI 偵測範圍</label>
+              <select id="roi_preset" class="form-control" onchange="toggleCustomRoiInput()">
+                <option value="full">全畫面偵測 (預設，不限制區域)</option>
+                <option value="center_seats">標準教室座位區 (排除講台與兩側走道)</option>
+                <option value="trapezoid_seats">廣角梯形座位區 (前窄後寬透視校正)</option>
+                <option value="custom">自訂多邊形座標 (Normalized JSON)</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group" id="custom-roi-group" style="display:none;">
+            <label class="form-label" for="roi_custom_json">自訂 ROI 頂點座標 (0.0~1.0 正規化 [x, y] 陣列，至少 3 點)</label>
+            <input id="roi_custom_json" class="form-control" type="text" value="[[0.08, 0.20], [0.92, 0.20], [0.96, 0.95], [0.04, 0.95]]" />
           </div>
           <div class="form-group">
             <label class="form-label" for="notes">備註說明</label>
@@ -649,13 +678,14 @@
 
 <!-- DETAILS / SUMMARY MODAL -->
 <div class="modal-overlay" id="details-modal">
-  <div class="modal" style="max-width: 500px;">
-    <div class="modal-title">📊 課程數據摘要</div>
-    <div class="modal-body" id="details-modal-body" style="color: var(--text-primary);">
+  <div class="modal" style="max-width: 720px; max-height: 88vh; overflow-y: auto;">
+    <div class="modal-title">📊 課程數據摘要與時序分析</div>
+    <div class="modal-body" id="details-modal-body" style="color: var(--text-primary); margin-bottom: 1rem;">
       <div class="empty-state"><div class="icon">⏳</div><p>載入中…</p></div>
     </div>
-    <div class="modal-actions" style="margin-top: 1.5rem;">
-      <button class="btn btn-primary" id="download-report-btn" onclick="downloadReport()">📥 下載課後報告</button>
+    <div class="modal-actions" style="margin-top: 1rem; flex-wrap: wrap;">
+      <button class="btn btn-ghost btn-sm" id="download-txt-btn" onclick="downloadReport('txt')">📄 下載文字摘要 (.txt)</button>
+      <button class="btn btn-primary" id="download-report-btn" onclick="downloadReport('pdf')">📥 下載 PDF 課後報告</button>
       <button class="btn btn-ghost" onclick="closeDetailsModal()">關閉</button>
     </div>
   </div>
@@ -869,29 +899,151 @@ async function handleDeleteSession(e) {
   }
 }
 
+function renderMetricsSvgChart(metrics) {
+  if (!Array.isArray(metrics) || metrics.length < 2) {
+    const singleScore = (Array.isArray(metrics) && metrics.length === 1)
+      ? `（目前僅 1 筆採樣：${Math.round(metrics[0].attention_score ?? 100)}%）`
+      : '';
+    return `
+      <div style="background:rgba(0,0,0,0.22); border:1px dashed var(--border); border-radius:10px; padding:1.4rem 1rem; text-align:center; color:var(--text-muted); font-size:0.82rem;">
+        📉 課程進行時間較短，時序採樣點不足 2 筆，暫無法繪製連續折線趨勢圖 ${singleScore}
+      </div>`;
+  }
+
+  const w = 620, h = 150, padL = 36, padR = 14, padT = 14, padB = 24;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+  const step = Math.max(1, Math.floor(metrics.length / 80));
+  const sampled = metrics.filter((_, idx) => idx % step === 0 || idx === metrics.length - 1);
+  const n = sampled.length;
+
+  const pts = sampled.map((m, i) => {
+    const score = Math.max(0, Math.min(100, Number(m.attention_score ?? 100)));
+    const x = (padL + (i / Math.max(1, n - 1)) * plotW).toFixed(1);
+    const y = (padT + (1 - score / 100) * plotH).toFixed(1);
+    return { x, y, score, ts: m.timestamp };
+  });
+
+  const polyPoints = pts.map(p => `${p.x},${p.y}`).join(' ');
+  const areaPoints = `${pts[0].x},${padT + plotH} ${polyPoints} ${pts[pts.length - 1].x},${padT + plotH}`;
+  const firstTime = fmtDatetime(pts[0].ts).split(' ')[1] || '';
+  const lastTime  = fmtDatetime(pts[pts.length - 1].ts).split(' ')[1] || '';
+
+  const y100 = padT;
+  const y80  = (padT + 0.2 * plotH).toFixed(1);
+  const y50  = (padT + 0.5 * plotH).toFixed(1);
+  const y0   = padT + plotH;
+
+  return `
+    <div style="background:rgba(0,0,0,0.22); border:1px solid var(--border); border-radius:10px; padding:0.75rem 0.85rem;">
+      <svg width="100%" height="155" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="display:block; overflow:visible;">
+        <defs>
+          <linearGradient id="attAreaGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.35"/>
+            <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.02"/>
+          </linearGradient>
+        </defs>
+        <!-- Gridlines -->
+        <line x1="${padL}" y1="${y100}" x2="${w - padR}" y2="${y100}" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+        <line x1="${padL}" y1="${y80}"  x2="${w - padR}" y2="${y80}"  stroke="rgba(104,211,145,0.2)" stroke-dasharray="3,3" stroke-width="1"/>
+        <line x1="${padL}" y1="${y50}"  x2="${w - padR}" y2="${y50}"  stroke="rgba(246,173,85,0.25)" stroke-dasharray="3,3" stroke-width="1"/>
+        <line x1="${padL}" y1="${y0}"   x2="${w - padR}" y2="${y0}"   stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+        <!-- Y Axis Labels -->
+        <text x="${padL - 6}" y="${y100 + 4}" fill="#94a3b8" font-size="10" text-anchor="end">100%</text>
+        <text x="${padL - 6}" y="${Number(y80) + 4}" fill="#68d391" font-size="10" text-anchor="end">80%</text>
+        <text x="${padL - 6}" y="${Number(y50) + 4}" fill="#f6ad55" font-size="10" text-anchor="end">50%</text>
+        <text x="${padL - 6}" y="${y0 + 4}" fill="#94a3b8" font-size="10" text-anchor="end">0%</text>
+        <!-- Area & Line -->
+        <polygon points="${areaPoints}" fill="url(#attAreaGrad)" />
+        <polyline points="${polyPoints}" fill="none" stroke="#38bdf8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+        <!-- Time Labels -->
+        <text x="${padL}" y="${h - 4}" fill="#94a3b8" font-size="10" text-anchor="start">起點 ${firstTime}</text>
+        <text x="${w - padR}" y="${h - 4}" fill="#94a3b8" font-size="10" text-anchor="end">終點 ${lastTime} (共 ${metrics.length} 筆採樣)</text>
+      </svg>
+    </div>`;
+}
+
+function renderEventsTimelineList(events) {
+  if (!Array.isArray(events) || events.length === 0) {
+    return `
+      <div style="background:rgba(104,211,145,0.06); border:1px solid rgba(104,211,145,0.2); border-radius:10px; padding:0.9rem 1rem; color:var(--accent-green); font-size:0.82rem; text-align:center;">
+        🟢 本堂課未觸發任何異常行為或特殊事件紀錄，課堂專注狀況良好
+      </div>`;
+  }
+
+  const labelMap = {
+    SLEEPING:        { text: '🚨 趴睡 (SLEEPING)',        color: 'var(--accent-red)',    bg: 'rgba(252,129,129,0.14)' },
+    PHONE_SUSPECTED: { text: '📱 疑似手機 (PHONE)',       color: 'var(--accent-red)',    bg: 'rgba(252,129,129,0.14)' },
+    DISTRACTED:      { text: '👀 東張西望 (DISTRACTED)',   color: 'var(--accent-yellow)', bg: 'rgba(246,173,85,0.14)' },
+    HEAD_SUPPORT:    { text: '💡 托腮撐頭 (HEAD_SUPPORT)', color: 'var(--accent-yellow)', bg: 'rgba(246,173,85,0.14)' },
+    HAND_RAISED:     { text: '🙋‍♂️ 舉手互動 (HAND_RAISED)',  color: 'var(--accent-cyan)',   bg: 'rgba(118,228,247,0.14)' },
+  };
+
+  const rowsHtml = events.slice(0, 30).map(ev => {
+    const info = labelMap[ev.event_type] || { text: ev.event_type, color: 'var(--text-secondary)', bg: 'rgba(255,255,255,0.08)' };
+    const ts = fmtDatetime(ev.timestamp);
+    const dur = Number(ev.duration_seconds || 0).toFixed(1);
+    return `
+      <tr>
+        <td style="padding:0.5rem 0.65rem; font-size:0.78rem; color:var(--text-secondary);">${ts}</td>
+        <td style="padding:0.5rem 0.65rem; font-weight:600; font-size:0.8rem; color:var(--accent-blue);">${ev.tracking_id || 'S000'}</td>
+        <td style="padding:0.5rem 0.65rem;">
+          <span style="display:inline-block; padding:2px 8px; border-radius:99px; font-size:0.74rem; font-weight:600; color:${info.color}; background:${info.bg};">
+            ${info.text}
+          </span>
+        </td>
+        <td style="padding:0.5rem 0.65rem; font-size:0.78rem; text-align:right; color:var(--text-muted);">${dur} 秒</td>
+      </tr>`;
+  }).join('');
+
+  return `
+    <div style="max-height:190px; overflow-y:auto; border:1px solid var(--border); border-radius:10px; background:rgba(0,0,0,0.18);">
+      <table style="width:100%; border-collapse:collapse;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border); background:rgba(255,255,255,0.03);">
+            <th style="padding:0.5rem 0.65rem; font-size:0.7rem;">發生時間</th>
+            <th style="padding:0.5rem 0.65rem; font-size:0.7rem;">追蹤編號</th>
+            <th style="padding:0.5rem 0.65rem; font-size:0.7rem;">行為事件類型</th>
+            <th style="padding:0.5rem 0.65rem; font-size:0.7rem; text-align:right;">持續時間</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>`;
+}
+
 async function openDetailsModal(sessionId) {
   detailsSessionId = sessionId;
   const body = document.getElementById('details-modal-body');
-  body.innerHTML = `<div class="empty-state"><div class="icon">⏳</div><p>載入中…</p></div>`;
+  body.innerHTML = `<div class="empty-state"><div class="icon">⏳</div><p>載入課程摘要與時序圖表中…</p></div>`;
   document.getElementById('details-modal').classList.add('active');
   document.getElementById('download-report-btn').disabled = true;
+  const txtBtn = document.getElementById('download-txt-btn');
+  if (txtBtn) txtBtn.disabled = true;
 
   try {
-    const summary = await apiFetch(`/api/v1/sessions/${sessionId}/summary`);
+    const [summary, metrics, events] = await Promise.all([
+      apiFetch(`/api/v1/sessions/${sessionId}/summary`),
+      apiFetch(`/api/v1/sessions/${sessionId}/metrics?limit=500`).catch(() => []),
+      apiFetch(`/api/v1/sessions/${sessionId}/events`).catch(() => []),
+    ]);
     document.getElementById('download-report-btn').disabled = false;
-    
+    if (txtBtn) txtBtn.disabled = false;
+
     const isLive = !summary.ended_at;
     const scoreColor = summary.avg_attention_score >= 80 ? 'var(--accent-green)' : (summary.avg_attention_score >= 60 ? 'var(--accent-yellow)' : 'var(--accent-red)');
-    
+    const minScore = summary.min_attention_score !== undefined ? summary.min_attention_score : summary.avg_attention_score;
+    const maxScore = summary.max_attention_score !== undefined ? summary.max_attention_score : summary.avg_attention_score;
+
     body.innerHTML = `
-      <div class="session-info-grid" style="margin-bottom: 1.5rem;">
+      <div class="session-info-grid" style="margin-bottom: 1.1rem;">
         <div class="session-info-item">
           <div class="session-info-label">課程名稱</div>
           <div class="session-info-value" style="font-weight:700;">${summary.class_name}</div>
         </div>
         <div class="session-info-item">
-          <div class="session-info-label">授課教師</div>
-          <div class="session-info-value">${summary.teacher}</div>
+          <div class="session-info-label">授課教師 / 教室</div>
+          <div class="session-info-value">${summary.teacher} ${summary.room ? `<span style="color:var(--text-muted);font-size:0.8rem;">(${summary.room})</span>` : ''}</div>
         </div>
         <div class="session-info-item">
           <div class="session-info-label">開始時間</div>
@@ -902,20 +1054,40 @@ async function openDetailsModal(sessionId) {
           <div class="session-info-value" style="font-size:0.82rem;">${isLive ? '<span style="color:var(--accent-green)">進行中</span>' : fmtDatetime(summary.ended_at)}</div>
         </div>
       </div>
-      
-      <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:12px;padding:1.25rem;display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;text-align:center;margin-bottom:1.25rem;">
+
+      <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:12px;padding:1rem;display:grid;grid-template-columns:repeat(4,1fr);gap:0.75rem;text-align:center;margin-bottom:1.1rem;">
         <div>
-          <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:4px;">平均專注度</div>
-          <div style="font-size:1.4rem;font-weight:700;color:${scoreColor};">${summary.avg_attention_score}%</div>
+          <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:4px;">平均專注度</div>
+          <div style="font-size:1.35rem;font-weight:700;color:${scoreColor};">${summary.avg_attention_score}%</div>
         </div>
         <div>
-          <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:4px;">最大人數</div>
-          <div style="font-size:1.4rem;font-weight:700;color:var(--accent-cyan);">${summary.max_student_count}</div>
+          <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:4px;">最低 / 最高</div>
+          <div style="font-size:1.05rem;font-weight:700;color:var(--text-primary);margin-top:4px;">${minScore}% ~ ${maxScore}%</div>
         </div>
         <div>
-          <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:4px;">異常次數</div>
-          <div style="font-size:1.4rem;font-weight:700;color:var(--accent-red);">${summary.total_abnormal_events}</div>
+          <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:4px;">最大在線人數</div>
+          <div style="font-size:1.35rem;font-weight:700;color:var(--accent-cyan);">${summary.max_student_count} 人</div>
         </div>
+        <div>
+          <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:4px;">累積異常事件</div>
+          <div style="font-size:1.35rem;font-weight:700;color:var(--accent-red);">${summary.total_abnormal_events} 次</div>
+        </div>
+      </div>
+
+      <div style="margin-bottom:1.1rem;">
+        <div style="font-size:0.78rem; font-weight:600; color:var(--text-secondary); margin-bottom:6px; display:flex; justify-content:space-between;">
+          <span>📈 課堂專注度時序變化折線圖</span>
+          <span style="color:var(--text-muted); font-size:0.72rem;">綠線 80% 優良 · 橘線 50% 警戒</span>
+        </div>
+        ${renderMetricsSvgChart(metrics)}
+      </div>
+
+      <div>
+        <div style="font-size:0.78rem; font-weight:600; color:var(--text-secondary); margin-bottom:6px; display:flex; justify-content:space-between;">
+          <span>🚨 異常行為與課堂互動時序明細 (${Array.isArray(events) ? events.length : 0} 筆)</span>
+          <span style="color:var(--text-muted); font-size:0.72rem;">FSM 連續時間窗驗證</span>
+        </div>
+        ${renderEventsTimelineList(events)}
       </div>
     `;
   } catch (err) {
@@ -928,9 +1100,9 @@ function closeDetailsModal() {
   detailsSessionId = null;
 }
 
-function downloadReport() {
+function downloadReport(fmt = 'pdf') {
   if (!detailsSessionId) return;
-  window.open(`${API}/api/v1/sessions/${detailsSessionId}/report`, '_blank');
+  window.open(`${API}/api/v1/sessions/${detailsSessionId}/report?format=${encodeURIComponent(fmt)}`, '_blank');
 }
 
 function openEditModal(sessionId) {
@@ -1209,21 +1381,57 @@ function renderActiveSession(session) {
 }
 
 /* ── START SESSION ──────────────── */
+const ROI_PRESETS = {
+  full: [],
+  center_seats: [[0.08, 0.18], [0.92, 0.18], [0.92, 0.94], [0.08, 0.94]],
+  trapezoid_seats: [[0.18, 0.22], [0.82, 0.22], [0.96, 0.95], [0.04, 0.95]],
+};
+
+function toggleCustomRoiInput() {
+  const presetEl = document.getElementById('roi_preset');
+  const groupEl = document.getElementById('custom-roi-group');
+  if (presetEl && groupEl) {
+    groupEl.style.display = presetEl.value === 'custom' ? 'block' : 'none';
+  }
+}
+
+function resolveSelectedRoiPolygon() {
+  const presetEl = document.getElementById('roi_preset');
+  const preset = presetEl ? presetEl.value : 'full';
+  if (preset === 'custom') {
+    const raw = (document.getElementById('roi_custom_json')?.value || '').trim();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length < 3) {
+      throw new Error('自訂 ROI 多邊形至少需要 3 個頂點座標');
+    }
+    return parsed;
+  }
+  return ROI_PRESETS[preset] || [];
+}
+
 async function handleStartSession(e) {
   e.preventDefault();
   if (currentActiveSession) { toast('已有課程在進行中，請先結束目前課程', 'warning'); return; }
+  let roiPolygon = [];
+  try {
+    roiPolygon = resolveSelectedRoiPolygon();
+  } catch (parseErr) {
+    toast(`ROI 座標格式錯誤：${parseErr.message}`, 'error');
+    return;
+  }
   setLoading('start-btn','start-spinner',true);
   const payload = {
     class_name: document.getElementById('class_name').value.trim(),
     teacher:    document.getElementById('teacher').value.trim(),
     room:       document.getElementById('room').value.trim(),
     notes:      document.getElementById('notes').value.trim(),
-    roi_polygon: []
+    roi_polygon: roiPolygon
   };
   try {
     const res = await apiFetch('/api/v1/sessions', { method:'POST', body: JSON.stringify(payload) });
     toast(`✅ 課程已開始！Session ID: ${res.session_id.slice(0,8)}…`, 'success');
     document.getElementById('start-form').reset();
+    toggleCustomRoiInput();
     await refreshAll();
   } catch(err) {
     if (err.status === 409) {
@@ -1457,6 +1665,7 @@ function togglePrivacyMode() {
 /* ── HUD REALTIME & AI METRICS ──── */
 let hudPollInterval = null;
 const alertHistory = [];  // keep last 15 alert strings
+const hudScoreHistory = []; // keep last 30 attention score samples
 
 function updateHudUI(score, students, latestEvent, events) {
   const scoreEl = document.getElementById('hud-score');
@@ -1465,13 +1674,47 @@ function updateHudUI(score, students, latestEvent, events) {
   const heartbeatText = document.getElementById('ai-heartbeat-text');
   const heartbeatDot = document.getElementById('ai-heartbeat-dot');
 
-  // Update Score
+  // Update Score & Rolling Sparkline
   if (scoreEl && score !== undefined && score !== null) {
-    const s = Math.round(score);
+    const s = Math.max(0, Math.min(100, Math.round(score)));
     scoreEl.textContent = `${s} 分`;
     if (s >= 80) scoreEl.style.color = 'var(--accent-green)';
     else if (s >= 50) scoreEl.style.color = 'var(--accent-yellow)';
     else scoreEl.style.color = 'var(--accent-red)';
+
+    hudScoreHistory.push(s);
+    if (hudScoreHistory.length > 30) hudScoreHistory.shift();
+
+    const polyEl = document.getElementById('hud-sparkline-poly');
+    const trendBadgeEl = document.getElementById('hud-trend-badge');
+    if (polyEl && hudScoreHistory.length >= 1) {
+      const w = 240, h = 36, pad = 3;
+      const n = hudScoreHistory.length;
+      const pts = hudScoreHistory.map((val, idx) => {
+        const x = n === 1 ? w : ((idx / (n - 1)) * w).toFixed(1);
+        const y = (pad + (1 - val / 100) * (h - pad * 2)).toFixed(1);
+        return `${x},${y}`;
+      });
+      if (n === 1) pts.unshift(`0,${pts[0].split(',')[1]}`);
+      polyEl.setAttribute('points', pts.join(' '));
+      polyEl.setAttribute('stroke', s >= 80 ? 'var(--accent-cyan)' : (s >= 50 ? 'var(--accent-yellow)' : 'var(--accent-red)'));
+    }
+
+    if (trendBadgeEl && hudScoreHistory.length >= 2) {
+      const firstHalf = hudScoreHistory.slice(0, Math.max(1, Math.floor(hudScoreHistory.length / 2)));
+      const firstAvg = firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length;
+      const drop = firstAvg - s;
+      if (drop >= 20 || s < 55) {
+        trendBadgeEl.textContent = '⚠️ 專注度驟降警戒';
+        trendBadgeEl.style.color = 'var(--accent-red)';
+      } else if (drop >= 10 || s < 75) {
+        trendBadgeEl.textContent = '● 略微波動';
+        trendBadgeEl.style.color = 'var(--accent-yellow)';
+      } else {
+        trendBadgeEl.textContent = '● 穩定優良';
+        trendBadgeEl.style.color = 'var(--accent-green)';
+      }
+    }
   }
 
   // Update Students count - always show "X 人", never "--人"

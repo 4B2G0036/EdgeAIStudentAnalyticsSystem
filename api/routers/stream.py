@@ -164,8 +164,10 @@ class StreamBroadcaster:
             try:
                 success, frame = cam.read_frame()
                 if success and frame is not None:
-                    # Run YOLOv8-Pose AI inference with bounding box & skeleton overlay
-                    analysis = analyzer.analyze_frame(frame, draw_overlay=True)
+                    # Run YOLOv8-Pose AI inference with active session ROI polygon & skeleton overlay
+                    persister = get_persister()
+                    roi_poly = persister.get_active_roi_polygon()
+                    analysis = analyzer.analyze_frame(frame, roi_polygon=roi_poly, draw_overlay=True)
                     annotated_frame = analysis["annotated_frame"]
 
                     score = analysis["attention_score"]
@@ -177,7 +179,7 @@ class StreamBroadcaster:
                     update_live_state(score, count, latest_event, events)
 
                     # Persist to DB if session is active (session cached, events lifecycle-aware)
-                    get_persister().persist(score, count, events)
+                    persister.persist(score, count, events)
 
                     # Add overlay banner with timestamp and stats
                     height, width = annotated_frame.shape[:2]

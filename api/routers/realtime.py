@@ -224,9 +224,10 @@ def _process_webcam_frame_sync(body: bytes) -> Tuple[Optional[dict], Optional[st
     if frame is None:
         return None, "Cannot decode image"
 
-    # Run AI Pose & Attention Analyzer
+    # Run AI Pose & Attention Analyzer (with active session ROI if configured)
+    persister = get_persister()
     analyzer = PoseAnalyzer.get_instance()
-    analysis = analyzer.analyze_frame(frame, draw_overlay=False)
+    analysis = analyzer.analyze_frame(frame, roi_polygon=persister.get_active_roi_polygon(), draw_overlay=False)
 
     score = analysis["attention_score"]
     count = analysis["student_count"]
@@ -237,7 +238,7 @@ def _process_webcam_frame_sync(body: bytes) -> Tuple[Optional[dict], Optional[st
     update_live_state(score, count, latest_event, events)
 
     # If a session is active, write to MongoDB (shared lifecycle-aware persister)
-    get_persister().persist(score, count, events)
+    persister.persist(score, count, events)
 
     return {
         "status": "ok",

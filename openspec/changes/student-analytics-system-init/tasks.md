@@ -42,32 +42,32 @@
 - [x] 4.1 實作 `database/connection.py`：MongoDB 連線初始化與連線池管理。
 - [x] 4.2 實作 `database/collections.py`：建立三個集合與索引：`Classes_Session`、`Attention_Metrics` (Time Series Collection)、`Abnormal_Events`，含自動 TTL 索引維護。
 - [x] 4.3 實作 `database/writer.py`：非同步指標批量寫入器 (`MetricBatchWriter`)，佇列暫存以 15 筆或 2 秒週期批次寫入，支援主動阻塞排空 (`AWAIT_QUEUE_FLUSH`) 與記憶體溢位防護。
-- [x] 4.4 實作 `database/queries.py`：統計查詢、時序指標聚合、分頁課程列表與生命週期事件維護。
+- [x] 4.4 實作 `database/queries.py`：統計查詢、時序指標聚合 (`$max` 最大在線人數回填與 `min/max` 專注度區間)、分頁課程列表與生命週期事件維護。
 
 ## 5. FastAPI 後端 (API Layer — `api/`)
 
-- [x] 5.1 實作 `api/main.py`：加上 **CORS Middleware**，讀取 `config.CORS_ORIGINS`。日誌支援 `trace_id` 紀錄。
+- [x] 5.1 實作 `api/main.py`：加上 **CORS Middleware** (`allow_private_network=True` 支援 PNA 預檢)，讀取 `config.CORS_ORIGINS`。日誌支援 `trace_id` 紀錄。
 - [x] 5.2 實作 `api/routers/sessions.py`：Session 生命週期端點。支援列表端點的分頁查詢 `limit/offset`。`PATCH /sessions/{id}/end` 必須觸發 `AWAIT_QUEUE_FLUSH` 確保資料一致。
-- [x] 5.3 實作 `api/routers/stream.py`：`GET /api/v1/stream` 推送符合 RFC 1341 之 MJPEG Boundary 串流。
-- [x] 5.4 實作 `api/routers/realtime.py`：每秒讀取 GlobalSafeStorage / DB 返回 `ClassMetrics`，供儀表板輪詢。
-- [x] 5.5 實作 `api/routers/reports.py`：`GET /api/v1/report/{session_id}`，加上 **速率限制 (Rate Limiting)** (`API_RATE_LIMIT`)。
+- [x] 5.3 實作 `api/routers/stream.py`：`GET /api/v1/stream` 推送符合 RFC 1341 之 MJPEG Boundary 串流，並自動套用當前課程 `roi_polygon` 座位區邊界疊加與過濾。
+- [x] 5.4 實作 `api/routers/realtime.py`：每秒讀取 GlobalSafeStorage / DB 返回 `ClassMetrics`，供儀表板輪詢與 SSE/WebSocket 推送。
+- [x] 5.5 實作 `api/routers/reports.py`：`GET /api/v1/sessions/{session_id}/report` (相容 `/api/v1/report/{session_id}`)，加上 **速率限制 (Rate Limiting)** (`API_RATE_LIMIT`)。
 
 ## 6. 即時儀表板 (Dashboard — `dashboard/`)
 
 - [x] 6.1 建構現代化響應式 Web 儀表板 (`dashboard/index.html`)，部署至 Firebase Hosting，時間本地化轉換。
-- [x] 6.2 實作「課程設定與開課」：重複 Session 防護、即時表單校驗。
-- [x] 6.3 實作「實時 AI 監控 (Live Stream)」：支援隱私保護模式、心跳監測、自動重連與 API 探測、動態分類徽章 (`🙋‍♂️ 課堂互動`、`💡 注意提醒`、`🚨 異常告警`)。
-- [x] 6.4 實作「歷史記錄」與「報告下載」：分頁載入課程、歷史摘要統計卡片。
+- [x] 6.2 實作「課程設定與開課」：重複 Session 防護、即時表單校驗、座位區 ROI 範圍選擇器 (全畫面/標準座位區/廣角梯形/自訂 Normalized JSON)。
+- [x] 6.3 實作「實時 AI 監控 (Live Stream)」：支援隱私保護模式、心跳監測、近 30 點即時專注度滾動 Sparkline 與驟降警戒、自動重連與 API 探測、動態分類徽章 (`🙋‍♂️ 課堂互動`、`💡 注意提醒`、`🚨 異常告警`)。
+- [x] 6.4 實作「歷史記錄」與「報告下載」：分頁載入課程、歷史摘要統計卡片、SVG 課堂專注度時序變化折線圖、異常與課堂互動時序明細表、PDF / TXT 雙格式課後報告下載。
 
 ## 7. PDF 報表生成 (Report Generation — `api/routers/reports.py`)
 
-- [x] 7.1 實作 ReportLab 報表排版，支援 PDF 與純文字雙格式。
-- [x] 7.2 實作摘要指標提取：最高在線人數、平均專注度、累積異常次數。
-- [x] 7.3 實作課後 PDF 背景預產快取 (`scratch/reports/`)，點擊即時下載。
-- [x] 7.4 整合測試：驗證觸發生成至 PDF 完成時間 ≤ 5 秒，文字顯示無亂碼。
+- [x] 7.1 實作 ReportLab 報表排版，自動註冊系統 CJK TrueType 中文字型 (`msjh.ttc` / Noto Sans CJK)，支援 PDF 與純文字雙格式。
+- [x] 7.2 實作摘要指標提取：最高在線人數、平均專注度、最低/最高專注度區間、累積異常次數、向量專注度時序變化趨勢圖、異常分類統計與時序明細表、AI 自動教學與環境改善建議。
+- [x] 7.3 實作課後 PDF 背景預產快取 (`scratch/reports/report_v2_{session_id}.pdf`)，點擊即時下載。
+- [x] 7.4 整合測試：驗證觸發生成至 PDF 完成時間 ≤ 5 秒，繁體中文與圖表顯示清晰無亂碼。
 
 ## 8. 系統整合測試與最佳化 (Integration Testing & Optimization)
 
 - [x] 8.1 整合所有模組：攝影機每 0.2s → YOLO (帶 Trace ID) → 評分 → MJPEG 串流 + DB 批次寫入完整管線通跑。
-- [x] 8.2 自動化測試套件：`tests/test_core.py` (23項)、`scripts/test_api_v1.py` (7項)、`scripts/test_all_features.py` (13項)、`scripts/lint_and_check.py` (47檔案) 全數 100% 通過。
-- [x] 8.3 撰寫 `README.md`、`VERSION.md`、`CHANGELOG.md` 完整操作手冊與版本發布包。
+- [x] 8.2 自動化測試套件：`tests/test_core.py` (26項)、`scripts/test_api_v1.py` (7項)、`scripts/test_all_features.py` (13項)、`scripts/lint_and_check.py` (47檔案) 全數 100% 通過。
+- [x] 8.3 撰寫 `README.md`、`VERSION.md`、`CHANGELOG.md` 完整操作手冊與 `v1.0.0` 正式版本發布包。

@@ -379,6 +379,25 @@ class PoseAnalyzer:
         t_infer = (time.time() - t0) * 1000.0
 
         if num_dets == 0:
+            empty_frame = None
+            if draw_overlay:
+                empty_frame = frame.copy()
+                if roi_polygon is not None and len(roi_polygon) >= 3:
+                    try:
+                        pts_px = np.array(
+                            [[int(float(pt[0]) * w), int(float(pt[1]) * h)] for pt in roi_polygon],
+                            dtype=np.int32,
+                        ).reshape((-1, 1, 2))
+                        cv2.polylines(
+                            empty_frame,
+                            [pts_px],
+                            isClosed=True,
+                            color=(235, 235, 235),
+                            thickness=2,
+                            lineType=cv2.LINE_AA,
+                        )
+                    except Exception:
+                        pass
             return FrameResult(
                 frame_id=frame_id,
                 tracked_persons=[],
@@ -386,7 +405,7 @@ class PoseAnalyzer:
                 active_flags=set(),
                 latest_event_desc="未偵測到學生",
                 inference_ms=t_infer,
-                annotated_frame=frame.copy() if draw_overlay else None,
+                annotated_frame=empty_frame,
             )
 
         # ── Step 2: Multi-person tracking (ByteTrack-like IoU) ─────────────────
@@ -469,6 +488,25 @@ class PoseAnalyzer:
         if draw_overlay:
             # RULE: PII face blurring MUST happen BEFORE drawing labels/skeletons!
             blurred = apply_privacy_blur(frame, boxes_xyxy, keypoints)
+
+            # Draw ROI Polygon boundary if active
+            if roi_polygon is not None and len(roi_polygon) >= 3:
+                try:
+                    pts_px = np.array(
+                        [[int(float(pt[0]) * w), int(float(pt[1]) * h)] for pt in roi_polygon],
+                        dtype=np.int32,
+                    ).reshape((-1, 1, 2))
+                    cv2.polylines(
+                        blurred,
+                        [pts_px],
+                        isClosed=True,
+                        color=(235, 235, 235),
+                        thickness=2,
+                        lineType=cv2.LINE_AA,
+                    )
+                except Exception:
+                    pass
+
             label_items: list[dict] = []
 
             for i in range(num_dets):

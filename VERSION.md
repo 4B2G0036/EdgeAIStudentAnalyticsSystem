@@ -1,11 +1,11 @@
 # 學生專注度與異常行為分析系統 (Edge AI Student Analytics System)
 
-## 版本說明 (Release Notes) - v0.9.2
+## 版本說明 (Release Notes) - v1.0.0
 
-- **版本號 (Version)**: `v0.9.2`
-- **打包日期 (Release Date)**: 2026-11-04 (Asia/Taipei)
-- **精簡版壓縮檔名稱**: `student_analytics_v0.9.2_20261104.zip`
-- **上一前置版本**: `v0.9.1` (`student_analytics_v0.9.1_20261104.zip`)
+- **版本號 (Version)**: `v1.0.0`
+- **打包日期 (Release Date)**: 2026-11-19 (Asia/Taipei)
+- **精簡版壓縮檔名稱**: `student_analytics_v1.0.0_20261119.zip`
+- **上一前置版本**: `v0.9.2` (`student_analytics_v0.9.2_20261104.zip`)
 - **線上預覽網址 (Live URL)**: [https://studentanalytics-91cd1.web.app](https://studentanalytics-91cd1.web.app)
 - **專案名稱**: 學生專注度與異常行為分析系統 (Student Analytics System)
 - **環境需求**: Python 3.10+ / MongoDB 7.0+ (已通過 8.3.7 測試) / HTML5 相容瀏覽器 (Chrome / Edge / Firefox)
@@ -13,6 +13,26 @@
 ---
 
 ## 1. 版本歷程與里程碑打包 (Milestone Packages)
+
+### 🏆 v1.0.0 (2026-11-19) — 全功能正式版：繁體中文向量圖表 PDF 課後報告、儀表板時序折線圖與異常明細、ROI 座位區套用及最大在線人數聚合
+- **壓縮檔名稱**: `student_analytics_v1.0.0_20261119.zip`
+- **主要更新**:
+  - **最大在線學生人數 (`max_student_count`) 動態追蹤與時序聚合 (`database/queries.py`, `api/persistence.py`)**:
+    - 新增 `update_session_max_students()`，於即時推論寫入過程中透過 MongoDB `$max` 自動更新 `Classes_Session.student_count` 峰值人數。
+    - `get_session_summary()` 同步從 `Attention_Metrics` 聚合 `$max: "$student_count"`、最低/最高專注度 (`min_attention_score` / `max_attention_score`)，並自動回填修正歷史課程的最大人數為 `0` 的問題。
+  - **繁體中文 CJK 字型與向量趨勢圖 PDF 課後評估報告 (`api/routers/reports.py`)**:
+    - 自動載入並註冊系統 CJK TrueType 字型（微軟正黑體 `msjh.ttc` / Noto Sans CJK 等），徹底解決 ReportLab 預設 `Helvetica` 無法顯示繁體中文課程名稱與教師姓名的問題。
+    - 升級 PDF 與 TXT 課後報告內容：包含 `Asia/Taipei` 本地化時間與課程總時長、核心指標摘要、**向量專注度時序變化趨勢圖**（自動降採樣平滑繪製）、**異常行為與舉手互動分類統計及時序明細表**、以及**系統自動教學與環境改善建議**。
+  - **前端儀表板視覺化圖表與 ROI 座位區設定 (`dashboard/index.html`)**:
+    - **歷史課程數據摘要 Modal (`openDetailsModal`)**: 並行載入 `/summary`、`/metrics` 與 `/events`，內嵌渲染 SVG **課堂專注度時序變化折線圖**（含 80% 優良線、50% 警戒線、漸層面積填色與短課程優雅降級提示）與 **異常行為/課堂互動時序明細表**，並提供 PDF 與 TXT 雙格式報告下載。
+    - **即時監控 HUD 趨勢微圖 (`#hud-sparkline-box`)**: 新增近 30 次採樣之即時滾動 SVG Sparkline 與「專注度驟降警戒 / 穩定優良」動態狀態徽章。
+    - **開始新課程 ROI 座位區選擇器 (`#roi_preset`)**: 支援「全畫面偵測」、「標準教室座位區」、「廣角梯形座位區」與「自訂多邊形 Normalized JSON 座標」。
+  - **實時串流套用進行中課程 ROI 多邊形與邊界繪製 (`core/pose_analyzer.py`, `api/persistence.py`, `api/routers/stream.py`, `api/routers/realtime.py`)**:
+    - `FrameResultPersister` 自動快取當前進行中課程的 `roi_polygon` 並傳遞至 `analyzer.analyze_frame()`，於實時畫面疊加繪製 ROI 座位區多邊形邊界框，且將區域外人員以灰色淡化標示並排除計分。
+  - **Starlette Private Network Access (PNA) 預檢強化 (`api/main.py`)**:
+    - 啟用 `CORSMiddleware(allow_private_network=True)` 並支援跨網域 PNA `OPTIONS` 預檢請求，搭配 Cloudflare Tunnel HTTPS 穿透雙重保障雲端儀表板連線穩定。
+  - **核心單元測試擴展 (`tests/test_core.py`)**:
+    - 單元測試由 23 項擴增至 26 項，全數 100% PASS。
 
 ### 🌟 v0.9.2 (2026-11-04) — 天花板俯角攝影機優化、手部動作（舉手/托腮/手機聚攏）分析深度升級與 Live Stream UI 優化
 - **壓縮檔名稱**: `student_analytics_v0.9.2_20261104.zip`

@@ -46,6 +46,8 @@ class FrameResultPersister:
 
         self._lock = threading.Lock()
         self._session_id: Optional[str] = None
+        self._roi_polygon: Optional[list] = None
+        self._max_student_count: int = 0
         self._session_checked_at: float = 0.0
         # (student, type) -> {"miss": int, "refreshed": float}
         self._active: Dict[EventKey, dict] = {}
@@ -61,11 +63,19 @@ class FrameResultPersister:
                 logger.warning("get_active_session failed: %s", exc)
                 session = None
             new_sid = session["session_id"] if session else None
+            self._roi_polygon = (session.get("roi_polygon") or None) if session else None
             if new_sid != self._session_id:
                 # 課程切換或結束：舊課程的事件交由 end_session 路徑關閉，這裡只重置本地狀態
                 self._active.clear()
                 self._session_id = new_sid
+                self._max_student_count = int((session.get("student_count") or 0) if session else 0)
         return self._session_id
+
+    def get_active_roi_polygon(self) -> Optional[list]:
+        """取得目前進行中課程之 ROI 多邊形頂點 (具有 TTL 快取，無課程或未設定時回傳 None)。"""
+        with self._lock:
+            self._resolve_session_id()
+            return self._roi_polygon if (self._roi_polygon and len(self._roi_polygon) >= 3) else None
 
     def invalidate_session_cache(self) -> None:
         """課程開始 / 結束時呼叫，讓下一幀立刻重新查詢。"""
@@ -81,6 +91,13 @@ class FrameResultPersister:
 
             if count > 0:
                 database.write_attention_metric(sid, score, count)
+                if int(count) > self._max_student_count:
+                    self._max_student_count = int(count)
+                    try:
+                        if hasattr(database, "update_session_max_students"):
+                            database.update_session_max_students(sid, int(count))
+                    except Exception as exc:
+                        logger.debug("update_session_max_students skipped: %s", exc)
 
             now = time.time()
             current = {parse_event(ev) for ev in events}

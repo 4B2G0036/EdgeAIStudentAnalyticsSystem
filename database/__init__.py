@@ -9,6 +9,7 @@ from database.queries import (
     get_active_session,
     list_sessions,
     get_session_summary,
+    update_session_max_students,
     update_session,
     delete_session,
     get_active_session_metrics,
