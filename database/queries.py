@@ -77,9 +77,9 @@ def end_session(session_id: str) -> dict:
         raise e
 
 def update_session(session_id: str, fields: dict) -> dict:
-    """Update editable metadata fields for a session (class_name, teacher, room, notes)."""
+    """Update editable metadata fields for a session (class_name, teacher, room, notes, roi_polygon)."""
     db = get_db()
-    allowed_fields = {"class_name", "teacher", "room", "notes"}
+    allowed_fields = {"class_name", "teacher", "room", "notes", "roi_polygon"}
     update_data = {k: v for k, v in fields.items() if k in allowed_fields}
     if not update_data:
         return None

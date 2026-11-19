@@ -79,6 +79,12 @@ def run_tests():
     else:
         print(f"FAILED: {response_sum.text}")
 
+    # 6. Clean up test session
+    try:
+        requests.delete(f"{BASE_URL}/{session_id}")
+    except Exception:
+        pass
+
     print("\n==================================================")
     print("ALL API LIFECYCLE TESTS PASSED SUCCESSFULLY!")
     print("==================================================")

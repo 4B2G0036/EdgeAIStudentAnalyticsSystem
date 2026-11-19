@@ -52,6 +52,29 @@ class SessionUpdate(BaseModel):
     teacher: Optional[str] = Field(None, description="教師姓名 (例如: 張教授)", min_length=1)
     room: Optional[str] = Field(None, description="教室編號 (例如: 資工館 301)")
     notes: Optional[str] = Field(None, description="課程備註")
+    roi_polygon: Optional[List[List[float]]] = Field(None, description="感興趣區域 (ROI) 多邊形正規化頂點座標")
+
+
+def _normalize_roi_polygon(roi_polygon: Optional[List[List[float]]]) -> List[List[float]]:
+    """Validate and clamp ROI polygon vertices to normalized [0.0, 1.0] coordinates."""
+    if not roi_polygon:
+        return []
+    if len(roi_polygon) < 3:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="ROI 多邊形若非空陣列，至少需要 3 個頂點座標 [[x1, y1], [x2, y2], [x3, y3]]",
+        )
+    normalized: List[List[float]] = []
+    for pt in roi_polygon:
+        if not isinstance(pt, (list, tuple)) or len(pt) != 2:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="ROI 多邊形每個頂點必須是長度為 2 的 [x, y] 座標",
+            )
+        x = max(0.0, min(1.0, float(pt[0])))
+        y = max(0.0, min(1.0, float(pt[1])))
+        normalized.append([round(x, 4), round(y, 4)])
+    return normalized
 
 @router.post(
     "", 
@@ -61,7 +84,10 @@ class SessionUpdate(BaseModel):
     description="初始化一門新的課程生命週期。若目前資料庫已有進行中的 Session，將會回傳 409 Conflict 衝突警告。"
 )
 async def start_new_session(payload: SessionCreate):
-    # 1. Prevent duplicate active session
+    # 1. Validate ROI polygon before querying DB
+    clean_roi = _normalize_roi_polygon(payload.roi_polygon)
+
+    # 2. Prevent duplicate active session
     active_session = await asyncio.to_thread(database.get_active_session)
     if active_session:
         logger.warning(f"Conflict: Session {active_session['session_id']} is already active.")
@@ -73,7 +99,7 @@ async def start_new_session(payload: SessionCreate):
             }
         )
         
-    # 2. Initialize a new session ID (UUID v4)
+    # 3. Initialize a new session ID (UUID v4)
     session_id = str(uuid.uuid4())
     try:
         session_doc = await asyncio.to_thread(
@@ -82,7 +108,7 @@ async def start_new_session(payload: SessionCreate):
             class_name=payload.class_name,
             teacher=payload.teacher,
             room=payload.room,
-            roi_polygon=payload.roi_polygon,
+            roi_polygon=clean_roi,
             notes=payload.notes
         )
         get_persister().invalidate_session_cache()
@@ -232,7 +258,10 @@ async def update_session_metadata(session_id: str, payload: SessionUpdate):
         )
         
     # 2. Extract non-null fields that were set
-    update_data = {k: v for k, v in payload.dict(exclude_unset=True).items() if v is not None}
+    raw_dict = payload.model_dump(exclude_unset=True) if hasattr(payload, "model_dump") else payload.dict(exclude_unset=True)
+    update_data = {k: v for k, v in raw_dict.items() if v is not None}
+    if "roi_polygon" in update_data:
+        update_data["roi_polygon"] = _normalize_roi_polygon(update_data["roi_polygon"])
     if not update_data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

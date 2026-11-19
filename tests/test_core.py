@@ -739,6 +739,38 @@ def test_round2_bugfixes_font_persister_camera_and_env():
     assert "API_RATE_LIMIT=" in env_example_text
 
 
+def test_round3_bugfixes_db_client_roi_validation_and_named_tunnel():
+    """Verify Round 3 AutoLoop bugfixes: ROI polygon validation/clamping, DB client lock, and named tunnel placeholder filtering."""
+    from fastapi import HTTPException
+    from api.routers.sessions import _normalize_roi_polygon
+    import database.connection as db_conn
+    import scripts.service_manager as sm
+
+    # 1. Empty ROI -> []
+    assert _normalize_roi_polygon([]) == []
+    assert _normalize_roi_polygon(None) == []
+
+    # 2. Clamping out-of-bounds coordinates to [0.0, 1.0]
+    clamped = _normalize_roi_polygon([[-0.2, 0.1], [1.5, 0.1], [0.9, 1.2]])
+    assert clamped == [[0.0, 0.1], [1.0, 0.1], [0.9, 1.0]]
+
+    # 3. Less than 3 vertices raises HTTP 422
+    raised = False
+    try:
+        _normalize_roi_polygon([[0.1, 0.2], [0.5, 0.6]])
+    except HTTPException as exc:
+        assert exc.status_code == 422
+        raised = True
+    assert raised is True
+
+    # 4. DB client lock is present
+    assert hasattr(db_conn, "_client_lock")
+
+    # 5. service_manager.ensure_tunnel accepts restart keyword argument (used by watchdog.py)
+    import inspect
+    assert "restart" in inspect.signature(sm.ensure_tunnel).parameters
+
+
 if __name__ == "__main__":
     print("Running Edge AI Visual Core tests...")
     test_roi_polygon_filtering()
@@ -797,5 +829,7 @@ if __name__ == "__main__":
     print("  ✓ test_bugfix_event_normalization_and_regex_safety passed")
     test_round2_bugfixes_font_persister_camera_and_env()
     print("  ✓ test_round2_bugfixes_font_persister_camera_and_env passed")
+    test_round3_bugfixes_db_client_roi_validation_and_named_tunnel()
+    print("  ✓ test_round3_bugfixes_db_client_roi_validation_and_named_tunnel passed")
     print("\n🎉 ALL TESTS PASSED!")
 

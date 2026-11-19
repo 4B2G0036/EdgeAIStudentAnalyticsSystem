@@ -1,8 +1,6 @@
 # testcam.py
 import cv2
 from core.camera import CameraManager
-import cv2
-from core.camera import CameraManager
 
 def main():
     print("啟動情緒分析系統...")
