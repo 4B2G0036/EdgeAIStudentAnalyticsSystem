@@ -24,13 +24,14 @@ from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger("core.drawing")
 
-# Candidate fonts by OS priority
+# Candidate CJK fonts by OS priority (strictly CJK-capable fonts only;
+# never include Latin-only fonts like arial.ttf/DejaVuSans.ttf here, otherwise
+# has_cjk_font() would return True and render Chinese characters as tofu boxes!)
 _WINDOWS_FONTS = [
     r"C:\Windows\Fonts\msjhbd.ttc",   # Microsoft JhengHei Bold
     r"C:\Windows\Fonts\msjh.ttc",     # Microsoft JhengHei
     r"C:\Windows\Fonts\mingliu.ttc",  # MingLiU
     r"C:\Windows\Fonts\simhei.ttf",   # SimHei
-    r"C:\Windows\Fonts\arial.ttf",    # Fallback Latin
 ]
 
 _LINUX_FONTS = [
@@ -38,13 +39,11 @@ _LINUX_FONTS = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
     "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 ]
 
 _DARWIN_FONTS = [
     "/System/Library/Fonts/PingFang.ttc",
     "/Library/Fonts/Arial Unicode.ttf",
-    "/System/Library/Fonts/Helvetica.ttc",
 ]
 
 # Translation table to prevent '????' when no CJK font is available
@@ -102,7 +101,7 @@ def get_font(size: int = 15, bold: bool = True) -> ImageFont.ImageFont:
         try:
             return ImageFont.truetype(font_path, size)
         except Exception as e:
-            logger.warning("Failed to load TrueType font '%s': %e", font_path, e)
+            logger.warning("Failed to load TrueType font '%s': %s", font_path, e)
 
     return ImageFont.load_default()
 

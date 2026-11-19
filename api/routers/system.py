@@ -6,8 +6,10 @@ api/routers/system.py
 """
 
 import os
+import sys
 import json
 import logging
+import subprocess
 from typing import Optional
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
@@ -17,6 +19,25 @@ router = APIRouter(prefix="/api/v1/system", tags=["系統與連線狀態"])
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 STATUS_FILE = os.path.join(ROOT_DIR, "scratch", "tunnel_status.json")
+
+
+def _is_pid_alive(pid) -> bool:
+    if not pid:
+        return True
+    try:
+        pid_int = int(pid)
+        if sys.platform == "win32":
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid_int}", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            ).stdout
+            return str(pid_int) in out
+        os.kill(pid_int, 0)
+        return True
+    except Exception:
+        return False
 
 
 class TunnelStatusResponse(BaseModel):
@@ -57,11 +78,15 @@ def get_tunnel_status():
     try:
         with open(STATUS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
+        raw_status = data.get("status", "unknown")
+        pid = data.get("pid")
+        if raw_status == "online" and pid and not _is_pid_alive(pid):
+            raw_status = "offline"
         return TunnelStatusResponse(
-            status=data.get("status", "unknown"),
-            tunnel_url=data.get("tunnel_url"),
-            swagger_docs=data.get("swagger_docs"),
-            dashboard_url=data.get("dashboard_url"),
+            status=raw_status,
+            tunnel_url=data.get("tunnel_url") if raw_status == "online" else None,
+            swagger_docs=data.get("swagger_docs") if raw_status == "online" else None,
+            dashboard_url=data.get("dashboard_url") if raw_status == "online" else None,
             engine=data.get("engine"),
             updated_at=data.get("updated_at")
         )

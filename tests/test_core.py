@@ -704,6 +704,41 @@ def test_bugfix_event_normalization_and_regex_safety():
     assert isinstance(res, list)
 
 
+def test_round2_bugfixes_font_persister_camera_and_env():
+    """Verify Round 2 bugfixes: strict CJK font list, metric throttling, camera thread-safety, and .env.example completeness."""
+    import os
+    from core.drawing import _WINDOWS_FONTS, _LINUX_FONTS, _DARWIN_FONTS
+    from core.camera import CameraManager
+    from api.persistence import FrameResultPersister
+    from api.routers.stream import StreamBroadcaster
+
+    # 1. Ensure no Latin-only fonts pollute the CJK font candidate lists
+    all_cjk_candidates = [os.path.basename(p).lower() for p in (_WINDOWS_FONTS + _LINUX_FONTS + _DARWIN_FONTS)]
+    assert "arial.ttf" not in all_cjk_candidates
+    assert "dejavusans.ttf" not in all_cjk_candidates
+    assert "helvetica.ttc" not in all_cjk_candidates
+
+    # 2. Verify CameraManager thread-safe is_open property and StreamBroadcaster.stop()
+    cam = CameraManager(camera_id=99)
+    assert cam.is_open is False
+    sb = StreamBroadcaster()
+    sb.start()
+    sb.stop(timeout=1.0)
+    assert sb._worker_thread is None
+
+    # 3. Verify FrameResultPersister metric interval throttling
+    persister = FrameResultPersister(metric_interval_s=1.0)
+    assert persister.metric_interval_s == 1.0
+
+    # 4. Verify .env.example includes AWAIT_FLUSH_TIMEOUT, HEARTBEAT_TIMEOUT, API_RATE_LIMIT
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root_dir, ".env.example"), "r", encoding="utf-8") as f:
+        env_example_text = f.read()
+    assert "AWAIT_FLUSH_TIMEOUT=" in env_example_text
+    assert "HEARTBEAT_TIMEOUT=" in env_example_text
+    assert "API_RATE_LIMIT=" in env_example_text
+
+
 if __name__ == "__main__":
     print("Running Edge AI Visual Core tests...")
     test_roi_polygon_filtering()
@@ -760,5 +795,7 @@ if __name__ == "__main__":
     print("  ✓ test_roi_polygon_overlay_and_persister_roi passed")
     test_bugfix_event_normalization_and_regex_safety()
     print("  ✓ test_bugfix_event_normalization_and_regex_safety passed")
+    test_round2_bugfixes_font_persister_camera_and_env()
+    print("  ✓ test_round2_bugfixes_font_persister_camera_and_env passed")
     print("\n🎉 ALL TESTS PASSED!")
 

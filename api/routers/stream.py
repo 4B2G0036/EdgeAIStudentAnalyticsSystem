@@ -110,6 +110,19 @@ class StreamBroadcaster:
                 )
                 self._worker_thread.start()
 
+    def stop(self, timeout: float = 2.0):
+        self._stop_event.set()
+        self._has_subscribers.set()
+        with self._lock:
+            thread = self._worker_thread
+            self._worker_thread = None
+        if thread and thread.is_alive():
+            thread.join(timeout=timeout)
+        try:
+            get_camera_manager().disconnect()
+        except Exception:
+            pass
+
     def subscribe(self) -> queue.Queue:
         q: queue.Queue = queue.Queue(maxsize=2)
         with self._lock:
@@ -153,10 +166,16 @@ class StreamBroadcaster:
         analyzer = PoseAnalyzer.get_instance()
         throttle = 1.0 / config.TARGET_FPS
 
+        idle_ticks = 0
         while not self._stop_event.is_set():
             # Idle and conserve CPU when no subscribers are watching
             if not self._has_subscribers.wait(timeout=0.5):
+                idle_ticks += 1
+                # After 10 seconds of 0 subscribers, release hardware camera handle so webcam LED turns off
+                if idle_ticks >= 20 and cam.is_open:
+                    cam.disconnect()
                 continue
+            idle_ticks = 0
 
             start_time = time.time()
             frame_bytes = None
@@ -254,7 +273,7 @@ async def get_live_camera_stream():
 )
 async def get_camera_status():
     cam = get_camera_manager()
-    is_open = cam.cap is not None and cam.cap.isOpened()
+    is_open = cam.is_open
     broadcaster = get_stream_broadcaster()
     return {
         "camera_id": config.CAMERA_ID,

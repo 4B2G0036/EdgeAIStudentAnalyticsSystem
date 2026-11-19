@@ -265,7 +265,7 @@ def get_active_session_metrics(session_id: str) -> dict:
         if latest_event:
             event_type = latest_event.get("event_type", "未知行為")
             student_id = latest_event.get("student_id", "未知ID")
-            latest_event_str = f"學生 {student_id}: {event_type}"
+            latest_event_str = f"{student_id}: {event_type}"
             
         return {
             "session_id": session_id,
@@ -279,7 +279,7 @@ def get_active_session_metrics(session_id: str) -> dict:
         return None
 
 def get_session_metrics(session_id: str, start_ts: float = None, end_ts: float = None, limit: int = 500) -> list[dict]:
-    """Query time-series attention metrics for a specific session."""
+    """Query time-series attention metrics for a specific session (with full-range downsampling if > limit)."""
     flush_attention_metrics()
     db = get_db()
     query = {"metadata.session_id": session_id}
@@ -293,10 +293,19 @@ def get_session_metrics(session_id: str, start_ts: float = None, end_ts: float =
         query["timestamp"] = time_cond
 
     try:
+        fetch_cap = max(limit, 5000)
         cursor = db["Attention_Metrics"].find(query, {"_id": 0})\
                                        .sort("timestamp", ASCENDING)\
-                                       .limit(limit)
+                                       .limit(fetch_cap)
         results = list(cursor)
+        if len(results) > limit and limit >= 2:
+            # Evenly downsample across the full timeline so long sessions aren't truncated at the start
+            n = len(results)
+            indices = [int(round(i * (n - 1) / (limit - 1))) for i in range(limit)]
+            results = [results[idx] for idx in indices]
+        elif len(results) > limit:
+            results = results[:limit]
+
         for r in results:
             if isinstance(r.get("timestamp"), datetime):
                 r["timestamp"] = r["timestamp"].isoformat()

@@ -102,6 +102,7 @@ class PoseAnalyzer:
         # Per-track sleeping debounce state: tid -> {"on": int, "off": int, "active": bool, "seen": int}
         self._sleep_state: dict[int, dict] = {}
         self._sleep_lock = threading.Lock()
+        self._tracker_lock = threading.Lock()
         self._frame_no: int = 0
 
     @classmethod
@@ -114,13 +115,14 @@ class PoseAnalyzer:
         """Reset multi-object tracker IDs and temporal debounce states when starting/ending a session."""
         with self._sleep_lock:
             self._sleep_state.clear()
-        try:
-            if hasattr(self.tracker, "reset"):
-                self.tracker.reset()
-            else:
-                self.tracker = PersonTracker()
-        except Exception:
-            pass
+        with self._tracker_lock:
+            try:
+                if hasattr(self.tracker, "reset"):
+                    self.tracker.reset()
+                else:
+                    self.tracker = PersonTracker()
+            except Exception:
+                pass
 
     def _debounce_sleeping(self, tracking_id: Optional[int], raw_sleeping: bool) -> bool:
         """
@@ -382,8 +384,10 @@ class PoseAnalyzer:
         h, w = frame.shape[:2]
 
         # 推進影格序號並清理久未出現之追蹤 ID 的趴睡濾波狀態
-        self._frame_no += 1
-        if self._frame_no % 30 == 0:
+        with self._tracker_lock:
+            self._frame_no += 1
+            frame_no_now = self._frame_no
+        if frame_no_now % 30 == 0:
             self._prune_sleep_state()
         # ── Step 1: Forward inference pass (ONNX) ──────────────────────────────
         boxes_xyxy, keypoints, scores, _ = self.engine.infer(frame)
@@ -391,6 +395,8 @@ class PoseAnalyzer:
         t_infer = (time.time() - t0) * 1000.0
 
         if num_dets == 0:
+            with self._tracker_lock:
+                self.tracker.update(boxes_xyxy)
             empty_frame = None
             if draw_overlay:
                 empty_frame = frame.copy()
@@ -421,7 +427,8 @@ class PoseAnalyzer:
             )
 
         # ── Step 2: Multi-person tracking (ByteTrack-like IoU) ─────────────────
-        tracking_ids = self.tracker.update(boxes_xyxy)
+        with self._tracker_lock:
+            tracking_ids = self.tracker.update(boxes_xyxy)
 
         # ── Step 3: Analyze each person ────────────────────────────────────────
         tracked_persons: list[TrackedPerson] = []

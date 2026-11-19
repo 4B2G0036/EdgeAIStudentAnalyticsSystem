@@ -100,8 +100,12 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Graceful shutdown: flush any pending metrics
+    # Graceful shutdown: flush any pending metrics and release camera broadcaster
     logger.info("FastAPI server is shutting down...")
+    try:
+        stream.get_stream_broadcaster().stop(timeout=2.0)
+    except Exception as e:
+        logger.warning(f"Shutdown stream broadcaster error: {e}")
     try:
         database.flush_attention_metrics()
         database.get_metric_writer().stop(timeout=3.0)

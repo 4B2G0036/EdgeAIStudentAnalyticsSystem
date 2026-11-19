@@ -39,15 +39,18 @@ class FrameResultPersister:
         session_ttl_s: float = 1.0,
         refresh_interval_s: float = 5.0,
         close_grace_frames: int = 3,
+        metric_interval_s: float = 1.0,
     ) -> None:
         self.session_ttl_s = session_ttl_s
         self.refresh_interval_s = refresh_interval_s
         self.close_grace_frames = max(1, close_grace_frames)
+        self.metric_interval_s = max(0.0, metric_interval_s)
 
         self._lock = threading.Lock()
         self._session_id: Optional[str] = None
         self._roi_polygon: Optional[list] = None
         self._max_student_count: int = 0
+        self._last_metric_at: float = 0.0
         self._session_checked_at: float = 0.0
         # (student, type) -> {"miss": int, "refreshed": float}
         self._active: Dict[EventKey, dict] = {}
@@ -68,6 +71,7 @@ class FrameResultPersister:
                 # 課程切換或結束：舊課程的事件交由 end_session 路徑關閉，這裡只重置本地狀態
                 self._active.clear()
                 self._session_id = new_sid
+                self._last_metric_at = 0.0
                 self._max_student_count = int((session.get("student_count") or 0) if session else 0)
         return self._session_id
 
@@ -81,6 +85,7 @@ class FrameResultPersister:
         """課程開始 / 結束時呼叫，讓下一幀立刻重新查詢。"""
         with self._lock:
             self._session_checked_at = 0.0
+            self._last_metric_at = 0.0
 
     # ── Main entry ─────────────────────────────────────────────────────────────
     def persist(self, score: float, count: int, events: Iterable[str]) -> None:
@@ -89,17 +94,19 @@ class FrameResultPersister:
             if not sid:
                 return
 
+            now = time.time()
             if count > 0:
-                database.write_attention_metric(sid, score, count)
-                if int(count) > self._max_student_count:
+                is_new_peak = int(count) > self._max_student_count
+                if is_new_peak or (now - self._last_metric_at) >= self.metric_interval_s:
+                    self._last_metric_at = now
+                    database.write_attention_metric(sid, score, count)
+                if is_new_peak:
                     self._max_student_count = int(count)
                     try:
                         if hasattr(database, "update_session_max_students"):
                             database.update_session_max_students(sid, int(count))
                     except Exception as exc:
                         logger.debug("update_session_max_students skipped: %s", exc)
-
-            now = time.time()
             current = {parse_event(ev) for ev in events}
 
             for key in current:

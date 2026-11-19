@@ -14,6 +14,7 @@ Key Specifications
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Optional, Tuple
 
@@ -53,6 +54,13 @@ class CameraManager:
         self._is_connected: bool = False
         self._last_failed_connect_time: float = 0.0
         self._connect_cooldown_s: float = 5.0
+        self._lock = threading.RLock()
+
+    @property
+    def is_open(self) -> bool:
+        """Thread-safe check whether the camera capture handle is currently open."""
+        with self._lock:
+            return bool(self._is_connected and self.cap is not None and self.cap.isOpened())
 
     def connect(self, raise_on_failure: bool = False) -> bool:
         """
@@ -168,14 +176,15 @@ class CameraManager:
             time.sleep(0.001)
 
     def disconnect(self) -> None:
-        """Safely release the camera resource."""
-        if self.cap is not None:
-            try:
-                self.cap.release()
-            except Exception as exc:
-                logger.error("Error releasing camera resource: %s", exc)
-            self.cap = None
-        self._is_connected = False
+        """Safely release the camera resource (thread-safe)."""
+        with self._lock:
+            if self.cap is not None:
+                try:
+                    self.cap.release()
+                except Exception as exc:
+                    logger.error("Error releasing camera resource: %s", exc)
+                self.cap = None
+            self._is_connected = False
         logger.info("Camera '%s' disconnected.", self.camera_id)
 
     def __enter__(self) -> "CameraManager":
