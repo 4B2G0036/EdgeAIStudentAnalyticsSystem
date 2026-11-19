@@ -1,3 +1,5 @@
+import os
+import re
 import logging
 from datetime import datetime
 from pymongo import ASCENDING, DESCENDING
@@ -5,6 +7,27 @@ from database.connection import get_db
 from database.writer import get_metric_writer, flush_attention_metrics
 
 logger = logging.getLogger("database.queries")
+
+
+def extract_event_code(event_type: str) -> str:
+    """Extract canonical event code (e.g. 'SLEEPING') from descriptive string '趴睡 (SLEEPING)'."""
+    if not event_type:
+        return "UNKNOWN"
+    upper = str(event_type).upper()
+    for code in ("SLEEPING", "PHONE_SUSPECTED", "DISTRACTED", "HEAD_SUPPORT", "HAND_RAISED"):
+        if code in upper:
+            return code
+    if "趴睡" in upper:
+        return "SLEEPING"
+    if "手機" in upper:
+        return "PHONE_SUSPECTED"
+    if "東張西望" in upper or "分心" in upper:
+        return "DISTRACTED"
+    if "托腮" in upper or "撐頭" in upper:
+        return "HEAD_SUPPORT"
+    if "舉手" in upper:
+        return "HAND_RAISED"
+    return str(event_type)
 
 def create_session(session_id: str, class_name: str, teacher: str, room: str = "", roi_polygon: list = None, notes: str = "") -> dict:
     db = get_db()
@@ -97,9 +120,10 @@ def list_sessions(limit: int = 10, offset: int = 0, search_query: str = None, st
     db = get_db()
     query = {}
     if search_query:
+        escaped_search = re.escape(search_query.strip())
         query["$or"] = [
-            {"class_name": {"$regex": search_query, "$options": "i"}},
-            {"teacher": {"$regex": search_query, "$options": "i"}}
+            {"class_name": {"$regex": escaped_search, "$options": "i"}},
+            {"teacher": {"$regex": escaped_search, "$options": "i"}}
         ]
     if status_filter:
         if status_filter == "active":
@@ -145,7 +169,7 @@ def get_session_summary(session_id: str) -> dict:
         # 1. Total negative anomalies count (excluding positive HAND_RAISED interactions)
         anomalies_count = db["Abnormal_Events"].count_documents({
             "session_id": session_id,
-            "event_type": {"$not": {"$regex": "HAND_RAISED"}}
+            "event_type": {"$not": {"$regex": "HAND_RAISED|舉手", "$options": "i"}}
         })
         
         # 2. Query average attention score and peak student count from Attention_Metrics
@@ -161,6 +185,8 @@ def get_session_summary(session_id: str) -> dict:
         ]
         agg_result = list(db["Attention_Metrics"].aggregate(pipeline))
         avg_score = agg_result[0]["avg_score"] if agg_result else 100.0
+        min_score = agg_result[0]["min_score"] if (agg_result and agg_result[0].get("min_score") is not None) else avg_score
+        max_score = agg_result[0]["max_score"] if (agg_result and agg_result[0].get("max_score") is not None) else avg_score
         agg_max_students = int(agg_result[0].get("max_students") or 0) if agg_result else 0
         stored_students = int(session.get("student_count", 0) or 0)
         max_student_count = max(stored_students, agg_max_students)
@@ -179,19 +205,36 @@ def get_session_summary(session_id: str) -> dict:
             "ended_at": session.get("ended_at"),
             "max_student_count": max_student_count,
             "avg_attention_score": round(avg_score, 2) if avg_score is not None else 100.0,
+            "min_attention_score": round(min_score, 2) if min_score is not None else 100.0,
+            "max_attention_score": round(max_score, 2) if max_score is not None else 100.0,
             "total_abnormal_events": anomalies_count
         }
     except Exception as e:
         logger.error(f"Error generating session summary for {session_id}: {e}")
         return None
 
+
+def invalidate_cached_reports(session_id: str) -> None:
+    """Remove any cached PDF report files for a session when metadata changes or session is deleted."""
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    reports_dir = os.path.join(root_dir, "scratch", "reports")
+    for fname in (f"report_{session_id}.pdf", f"report_v2_{session_id}.pdf"):
+        fpath = os.path.join(reports_dir, fname)
+        if os.path.exists(fpath):
+            try:
+                os.remove(fpath)
+            except Exception:
+                pass
+
+
 def delete_session(session_id: str) -> bool:
-    """Delete session metadata, time series metrics, and abnormal events."""
+    """Delete session metadata, time series metrics, abnormal events, and cached PDF reports."""
     db = get_db()
     try:
         res = db["Classes_Session"].delete_one({"session_id": session_id})
         db["Attention_Metrics"].delete_many({"metadata.session_id": session_id})
         db["Abnormal_Events"].delete_many({"session_id": session_id})
+        invalidate_cached_reports(session_id)
         logger.info(f"Session {session_id} and all related metrics/events deleted.")
         return res.deleted_count > 0
     except Exception as e:
@@ -209,7 +252,10 @@ def get_active_session_metrics(session_id: str) -> dict:
         live_score = latest_metric.get("attention_score", 100.0) if latest_metric else 100.0
         student_count = latest_metric.get("student_count", 0) if latest_metric else 0
         
-        abnormal_count = db["Abnormal_Events"].count_documents({"session_id": session_id})
+        abnormal_count = db["Abnormal_Events"].count_documents({
+            "session_id": session_id,
+            "event_type": {"$not": {"$regex": "HAND_RAISED|舉手", "$options": "i"}}
+        })
         
         latest_event = db["Abnormal_Events"].find_one(
             {"session_id": session_id},
@@ -260,22 +306,41 @@ def get_session_metrics(session_id: str, start_ts: float = None, end_ts: float =
         return []
 
 def get_session_events(session_id: str, event_type: str = None) -> list[dict]:
-    """Query abnormal events for a specific session."""
+    """Query abnormal events for a specific session with normalized fields."""
     db = get_db()
     query = {"session_id": session_id}
     if event_type:
-        query["event_type"] = event_type
+        query["event_type"] = {"$regex": re.escape(event_type.strip()), "$options": "i"}
 
     try:
         cursor = db["Abnormal_Events"].find(query, {"_id": 0}).sort("started_at", DESCENDING)
         results = list(cursor)
+        now = datetime.utcnow()
         for r in results:
-            if isinstance(r.get("started_at"), datetime):
-                r["started_at"] = r["started_at"].isoformat()
-            if isinstance(r.get("updated_at"), datetime):
-                r["updated_at"] = r["updated_at"].isoformat()
-            if isinstance(r.get("ended_at"), datetime):
-                r["ended_at"] = r["ended_at"].isoformat()
+            started_dt = r.get("started_at")
+            updated_dt = r.get("updated_at")
+            ended_dt = r.get("ended_at")
+
+            # Compute dynamic duration_seconds if event is still ongoing or missing duration_seconds
+            if r.get("duration_seconds") is None:
+                if isinstance(started_dt, datetime):
+                    ref_end = ended_dt if isinstance(ended_dt, datetime) else (updated_dt if isinstance(updated_dt, datetime) else now)
+                    r["duration_seconds"] = round(max(0.0, float((ref_end - started_dt).total_seconds())), 1)
+                else:
+                    r["duration_seconds"] = 0.0
+
+            if isinstance(started_dt, datetime):
+                r["started_at"] = started_dt.isoformat()
+            if isinstance(updated_dt, datetime):
+                r["updated_at"] = updated_dt.isoformat()
+            if isinstance(ended_dt, datetime):
+                r["ended_at"] = ended_dt.isoformat()
+
+            # Provide canonical aliases for frontend & PDF report consumers
+            r["timestamp"] = r.get("timestamp") or r.get("started_at")
+            r["tracking_id"] = r.get("tracking_id") or r.get("student_id") or "S000"
+            r["student_id"] = r.get("student_id") or r["tracking_id"]
+            r["event_code"] = extract_event_code(r.get("event_type", ""))
         return results
     except Exception as e:
         logger.error(f"Error querying abnormal events for {session_id}: {e}")

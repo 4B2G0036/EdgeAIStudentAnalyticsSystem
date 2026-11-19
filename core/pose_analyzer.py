@@ -110,6 +110,18 @@ class PoseAnalyzer:
             cls._instance = PoseAnalyzer()
         return cls._instance
 
+    def reset_session_state(self) -> None:
+        """Reset multi-object tracker IDs and temporal debounce states when starting/ending a session."""
+        with self._sleep_lock:
+            self._sleep_state.clear()
+        try:
+            if hasattr(self.tracker, "reset"):
+                self.tracker.reset()
+            else:
+                self.tracker = PersonTracker()
+        except Exception:
+            pass
+
     def _debounce_sleeping(self, tracking_id: Optional[int], raw_sleeping: bool) -> bool:
         """
         Temporal filter for the sleeping verdict (per tracked student).

@@ -669,6 +669,41 @@ def test_roi_polygon_overlay_and_persister_roi():
     assert persister.get_active_roi_polygon() == roi
 
 
+def test_bugfix_event_normalization_and_regex_safety():
+    """Verify event code normalization, SessionSummaryResponse schema fields, and regex-safe search."""
+    import database
+    from api.routers.sessions import SessionSummaryResponse
+
+    # 1. Canonical event code extraction from Chinese + English stored event_type
+    assert database.extract_event_code("趴睡 (SLEEPING)") == "SLEEPING"
+    assert database.extract_event_code("疑似使用手機 (PHONE_SUSPECTED)") == "PHONE_SUSPECTED"
+    assert database.extract_event_code("舉手發問 (HAND_RAISED)") == "HAND_RAISED"
+
+    # 2. SessionSummaryResponse preserves min/max score, room, and notes
+    model = SessionSummaryResponse(
+        session_id="s-001",
+        class_name="C++ 程式設計 [A班]",
+        teacher="王教授",
+        room="資工 301",
+        notes="期中考",
+        started_at="2026-11-19T01:00:00",
+        ended_at="2026-11-19T02:00:00",
+        max_student_count=30,
+        avg_attention_score=85.5,
+        min_attention_score=70.0,
+        max_attention_score=98.0,
+        total_abnormal_events=2,
+    )
+    dumped = model.model_dump() if hasattr(model, "model_dump") else model.dict()
+    assert dumped["min_attention_score"] == 70.0
+    assert dumped["max_attention_score"] == 98.0
+    assert dumped["room"] == "資工 301"
+
+    # 3. Regex characters in list_sessions search_query must not throw MongoDB regex error
+    res = database.list_sessions(limit=5, offset=0, search_query="C++ (資工[A班]*?")
+    assert isinstance(res, list)
+
+
 if __name__ == "__main__":
     print("Running Edge AI Visual Core tests...")
     test_roi_polygon_filtering()
@@ -723,5 +758,7 @@ if __name__ == "__main__":
     print("  ✓ test_cjk_pdf_report_generation_with_chart_and_events passed")
     test_roi_polygon_overlay_and_persister_roi()
     print("  ✓ test_roi_polygon_overlay_and_persister_roi passed")
+    test_bugfix_event_normalization_and_regex_safety()
+    print("  ✓ test_bugfix_event_normalization_and_regex_safety passed")
     print("\n🎉 ALL TESTS PASSED!")
 

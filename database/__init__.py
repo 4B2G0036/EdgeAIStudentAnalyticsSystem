@@ -18,7 +18,9 @@ from database.queries import (
     write_attention_metric,
     write_abnormal_event,
     close_abnormal_event,
-    close_all_active_events
+    close_all_active_events,
+    invalidate_cached_reports,
+    extract_event_code
 )
 
 

@@ -81,6 +81,9 @@ def named_tunnel_config():
     url = read_env_value("TUNNEL_PUBLIC_URL").rstrip("/")
     if not token or not url:
         return None
+    low_url = url.lower()
+    if any(placeholder in low_url for placeholder in ("myfastapidomain.com", "yourdomain.com", "example.com")):
+        return None
     if not url.startswith("https://"):
         url = "https://" + url.split("://")[-1]
     return token, url

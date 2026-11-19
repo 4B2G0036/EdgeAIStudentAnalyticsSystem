@@ -963,6 +963,28 @@ function renderMetricsSvgChart(metrics) {
     </div>`;
 }
 
+function escHtml(val) {
+  if (val === undefined || val === null) return '';
+  return String(val)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function resolveEventCode(ev) {
+  if (!ev) return 'UNKNOWN';
+  if (ev.event_code) return ev.event_code;
+  const raw = String(ev.event_type || '').toUpperCase();
+  if (raw.includes('SLEEPING') || raw.includes('趴睡')) return 'SLEEPING';
+  if (raw.includes('PHONE') || raw.includes('手機')) return 'PHONE_SUSPECTED';
+  if (raw.includes('DISTRACTED') || raw.includes('東張西望') || raw.includes('分心')) return 'DISTRACTED';
+  if (raw.includes('HEAD_SUPPORT') || raw.includes('托腮') || raw.includes('撐頭')) return 'HEAD_SUPPORT';
+  if (raw.includes('HAND_RAISED') || raw.includes('舉手')) return 'HAND_RAISED';
+  return raw || 'UNKNOWN';
+}
+
 function renderEventsTimelineList(events) {
   if (!Array.isArray(events) || events.length === 0) {
     return `
@@ -980,13 +1002,15 @@ function renderEventsTimelineList(events) {
   };
 
   const rowsHtml = events.slice(0, 30).map(ev => {
-    const info = labelMap[ev.event_type] || { text: ev.event_type, color: 'var(--text-secondary)', bg: 'rgba(255,255,255,0.08)' };
-    const ts = fmtDatetime(ev.timestamp);
-    const dur = Number(ev.duration_seconds || 0).toFixed(1);
+    const code = resolveEventCode(ev);
+    const info = labelMap[code] || { text: escHtml(ev.event_type || code), color: 'var(--text-secondary)', bg: 'rgba(255,255,255,0.08)' };
+    const ts = fmtDatetime(ev.timestamp || ev.started_at);
+    const sid = escHtml(ev.tracking_id || ev.student_id || 'S000');
+    const dur = Number(ev.duration_seconds ?? 0).toFixed(1);
     return `
       <tr>
         <td style="padding:0.5rem 0.65rem; font-size:0.78rem; color:var(--text-secondary);">${ts}</td>
-        <td style="padding:0.5rem 0.65rem; font-weight:600; font-size:0.8rem; color:var(--accent-blue);">${ev.tracking_id || 'S000'}</td>
+        <td style="padding:0.5rem 0.65rem; font-weight:600; font-size:0.8rem; color:var(--accent-blue);">${sid}</td>
         <td style="padding:0.5rem 0.65rem;">
           <span style="display:inline-block; padding:2px 8px; border-radius:99px; font-size:0.74rem; font-weight:600; color:${info.color}; background:${info.bg};">
             ${info.text}
@@ -1039,11 +1063,11 @@ async function openDetailsModal(sessionId) {
       <div class="session-info-grid" style="margin-bottom: 1.1rem;">
         <div class="session-info-item">
           <div class="session-info-label">課程名稱</div>
-          <div class="session-info-value" style="font-weight:700;">${summary.class_name}</div>
+          <div class="session-info-value" style="font-weight:700;">${escHtml(summary.class_name)}</div>
         </div>
         <div class="session-info-item">
           <div class="session-info-label">授課教師 / 教室</div>
-          <div class="session-info-value">${summary.teacher} ${summary.room ? `<span style="color:var(--text-muted);font-size:0.8rem;">(${summary.room})</span>` : ''}</div>
+          <div class="session-info-value">${escHtml(summary.teacher)} ${summary.room ? `<span style="color:var(--text-muted);font-size:0.8rem;">(${escHtml(summary.room)})</span>` : ''}</div>
         </div>
         <div class="session-info-item">
           <div class="session-info-label">開始時間</div>
@@ -1283,22 +1307,22 @@ function renderActiveSession(session) {
     <div class="session-info-grid">
       <div class="session-info-item">
         <div class="session-info-label">課程名稱</div>
-        <div class="session-info-value">${session.class_name}</div>
+        <div class="session-info-value">${escHtml(session.class_name)}</div>
       </div>
       <div class="session-info-item">
         <div class="session-info-label">教師</div>
-        <div class="session-info-value">${session.teacher}</div>
+        <div class="session-info-value">${escHtml(session.teacher)}</div>
       </div>
       <div class="session-info-item">
         <div class="session-info-label">教室</div>
-        <div class="session-info-value">${session.room || '—'}</div>
+        <div class="session-info-value">${escHtml(session.room) || '—'}</div>
       </div>
       <div class="session-info-item">
         <div class="session-info-label">開始時間</div>
         <div class="session-info-value" style="font-size:0.85rem;">${fmtDatetime(session.started_at)}</div>
       </div>
     </div>
-    ${session.notes ? `<div style="background:rgba(99,179,237,0.06);border:1px solid rgba(99,179,237,0.15);border-radius:8px;padding:0.65rem 1rem;font-size:0.82rem;color:var(--text-secondary);margin-bottom:1.25rem;">📝 ${session.notes}</div>` : ''}
+    ${session.notes ? `<div style="background:rgba(99,179,237,0.06);border:1px solid rgba(99,179,237,0.15);border-radius:8px;padding:0.65rem 1rem;font-size:0.82rem;color:var(--text-secondary);margin-bottom:1.25rem;">📝 ${escHtml(session.notes)}</div>` : ''}
     
     <!-- Real-time metrics section -->
     <div style="background:rgba(99,179,237,0.06);border:1px solid rgba(99,179,237,0.15);border-radius:12px;padding:1rem;margin-bottom:1.25rem;">
@@ -1495,9 +1519,9 @@ async function loadHistory() {
         const isLive = !s.ended_at;
         const dur = fmtDuration(s.started_at, s.ended_at);
         return `<tr>
-          <td><strong>${s.class_name}</strong></td>
-          <td>${s.teacher}</td>
-          <td>${s.room || '—'}</td>
+          <td><strong>${escHtml(s.class_name)}</strong></td>
+          <td>${escHtml(s.teacher)}</td>
+          <td>${escHtml(s.room) || '—'}</td>
           <td style="font-size:0.8rem;">${fmtDatetime(s.started_at)}</td>
           <td style="font-size:0.8rem;">${isLive ? '<span style="color:var(--accent-green)">進行中</span>' : fmtDatetime(s.ended_at)}</td>
           <td><span class="duration-chip">${dur}</span></td>

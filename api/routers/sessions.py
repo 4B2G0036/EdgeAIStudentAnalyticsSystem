@@ -37,10 +37,14 @@ class SessionSummaryResponse(BaseModel):
     session_id: str = Field(..., description="課程 UUID")
     class_name: str = Field(..., description="課程名稱")
     teacher: str = Field(..., description="教師姓名")
+    room: Optional[str] = Field("", description="教室編號")
+    notes: Optional[str] = Field("", description="備註說明")
     started_at: str = Field(..., description="課程開始時間")
     ended_at: Optional[str] = Field(None, description="課程結束時間")
     max_student_count: int = Field(..., description="最大並行在線人數")
     avg_attention_score: float = Field(..., description="全班平均專注度分數")
+    min_attention_score: Optional[float] = Field(100.0, description="全班最低專注度分數")
+    max_attention_score: Optional[float] = Field(100.0, description="全班最高專注度分數")
     total_abnormal_events: int = Field(..., description="累積觸發的異常事件次數")
 
 class SessionUpdate(BaseModel):
@@ -82,6 +86,11 @@ async def start_new_session(payload: SessionCreate):
             notes=payload.notes
         )
         get_persister().invalidate_session_cache()
+        try:
+            from core.pose_analyzer import PoseAnalyzer
+            PoseAnalyzer.get_instance().reset_session_state()
+        except Exception:
+            pass
         return {"session_id": session_id}
     except Exception as e:
         logger.error(f"Error starting new session: {e}")
@@ -111,19 +120,20 @@ async def end_active_session(session_id: str, background_tasks: BackgroundTasks)
             detail="該課程已經結束"
         )
         
-    # 2. Trigger Queue Flush (AWAIT_QUEUE_FLUSH)
-    logger.info(f"Triggering AWAIT_QUEUE_FLUSH for database writer queue. Timeout: 10s.")
-    await asyncio.to_thread(database.flush_attention_metrics)
-    
-    # 3. Update ended_at in DB
+    # 2. Update ended_at in DB first and invalidate persister cache so live stream stops writing to this session
     try:
         updated_session = await asyncio.to_thread(database.end_session, session_id)
+        get_persister().invalidate_session_cache()
 
-        # 3.1 關閉所有仍進行中的異常事件 (補上 ended_at / duration_seconds)，並讓即時寫入器立刻感知課程已結束
+        # 3. Trigger Queue Flush (AWAIT_QUEUE_FLUSH) after session is marked ended
+        logger.info(f"Triggering AWAIT_QUEUE_FLUSH for database writer queue. Timeout: 10s.")
+        await asyncio.to_thread(database.flush_attention_metrics)
+
+        # 3.1 關閉所有仍進行中的異常事件 (補上 ended_at / duration_seconds)
         closed = await asyncio.to_thread(database.close_all_active_events, session_id, "session_ended")
         if closed:
             logger.info(f"Closed {closed} active abnormal events for ended session {session_id}.")
-        get_persister().invalidate_session_cache()
+        database.invalidate_cached_reports(session_id)
         
         # 4. Trigger PDF Report generation asynchronously via BackgroundTasks
         logger.info(f"Triggering background task to generate PDF report for session {session_id}.")
@@ -236,6 +246,8 @@ async def update_session_metadata(session_id: str, payload: SessionUpdate):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="課程更新失敗，找不到該課程"
             )
+        database.invalidate_cached_reports(session_id)
+        get_persister().invalidate_session_cache()
             
         return {
             "status": "updated",

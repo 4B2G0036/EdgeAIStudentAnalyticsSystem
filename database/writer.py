@@ -31,6 +31,7 @@ class MetricBatchWriter:
         self._stop_event = threading.Event()
         self._worker_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+        self._flush_lock = threading.Lock()
 
     def start(self):
         with self._lock:
@@ -66,26 +67,27 @@ class MetricBatchWriter:
         return True
 
     def flush(self) -> int:
-        """Drain all pending metrics in queue and bulk insert them into MongoDB."""
-        batch = []
-        while not self._queue.empty():
+        """Drain all pending metrics in queue and bulk insert them into MongoDB (thread-safe)."""
+        with self._flush_lock:
+            batch = []
+            while not self._queue.empty():
+                try:
+                    batch.append(self._queue.get_nowait())
+                except queue.Empty:
+                    break
+
+            if not batch:
+                return 0
+
             try:
-                batch.append(self._queue.get_nowait())
-            except queue.Empty:
-                break
-
-        if not batch:
-            return 0
-
-        try:
-            db = get_db()
-            db["Attention_Metrics"].insert_many(batch, ordered=False)
-            logger.info(f"Successfully batch-flushed {len(batch)} metrics to MongoDB.")
-            return len(batch)
-        except Exception as e:
-            logger.error(f"Error during metric batch flush ({len(batch)} items): {e}")
-            self._requeue(batch)
-            return 0
+                db = get_db()
+                db["Attention_Metrics"].insert_many(batch, ordered=False)
+                logger.info(f"Successfully batch-flushed {len(batch)} metrics to MongoDB.")
+                return len(batch)
+            except Exception as e:
+                logger.error(f"Error during metric batch flush ({len(batch)} items): {e}")
+                self._requeue(batch)
+                return 0
 
     def _requeue(self, batch: List[dict]) -> None:
         """寫入失敗時把整批資料放回佇列等待下次重試 (有上限，避免 DB 長時間故障造成記憶體無限成長)。"""

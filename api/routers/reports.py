@@ -214,7 +214,8 @@ def _render_text_report(
     events = events or []
     event_counts: Dict[str, int] = defaultdict(int)
     for ev in events:
-        event_counts[str(ev.get("event_type", "UNKNOWN"))] += 1
+        code = ev.get("event_code") or database.extract_event_code(str(ev.get("event_type", "")))
+        event_counts[code] += 1
 
     started_fmt = _format_taipei_dt(summary.get("started_at") or started_str)
     ended_fmt = _format_taipei_dt(summary.get("ended_at") or ended_str)
@@ -405,7 +406,8 @@ def _render_pdf_report(
     # ── 5. Event Breakdown & Recent Events Table ──────────────────────────────
     event_counts: Dict[str, int] = defaultdict(int)
     for ev in events:
-        event_counts[str(ev.get("event_type", "UNKNOWN"))] += 1
+        code = ev.get("event_code") or database.extract_event_code(str(ev.get("event_type", "")))
+        event_counts[code] += 1
 
     c.setFillColorRGB(0.1, 0.2, 0.38)
     c.setFont(font_name, 11)
@@ -432,11 +434,11 @@ def _render_pdf_report(
     y_row = table_top - 30
     if events:
         for ev in events[:8]:
-            ts_str = _format_taipei_dt(ev.get("timestamp"))
-            tk_id = str(ev.get("tracking_id", "S000"))
-            et = str(ev.get("event_type", ""))
-            et_label = _EVENT_LABELS.get(et, et)
-            dur_s = float(ev.get("duration_seconds", 0.0))
+            ts_str = _format_taipei_dt(ev.get("timestamp") or ev.get("started_at"))
+            tk_id = str(ev.get("tracking_id") or ev.get("student_id") or "S000")
+            et_code = ev.get("event_code") or database.extract_event_code(str(ev.get("event_type", "")))
+            et_label = _EVENT_LABELS.get(et_code, str(ev.get("event_type", et_code)))
+            dur_s = float(ev.get("duration_seconds") or 0.0)
             c.setFillColorRGB(0.2, 0.24, 0.3)
             c.drawString(52, y_row, ts_str)
             c.drawString(200, y_row, tk_id)
